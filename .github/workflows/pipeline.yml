@@ -120,14 +120,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$IMAGE_REFERENCE" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]
-          [[ "$REGISTRY_USER" =~ ^[a-zA-Z0-9_\[\]-]+$ ]]
-          [[ "$VPS_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]]
-          [[ "$VPS_USER" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*$ ]]
+          fail() { printf '::error::%s\n' "$1" >&2; exit 1; }
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || fail 'Invalid commit SHA.'
+          [[ "$IMAGE_REFERENCE" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]] || fail 'Missing or invalid image digest.'
+          [[ "$REGISTRY_USER" =~ ^[a-zA-Z0-9_\[\]-]+$ ]] || fail 'Invalid GitHub registry username.'
+          [[ "$VPS_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]] || fail 'VPS_HOST must contain only the server IP or hostname, without spaces or a URL scheme.'
+          [[ "$VPS_USER" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*$ ]] || fail 'VPS_USER must contain only the Linux deployment username.'
           VPS_PORT=${VPS_PORT:-22}
-          [[ "$VPS_PORT" =~ ^[0-9]{1,5}$ ]] && (( VPS_PORT > 0 && VPS_PORT < 65536 ))
-          test -n "$SSH_PRIVATE_KEY" && test -n "$SSH_KNOWN_HOSTS"
+          [[ "$VPS_PORT" =~ ^[0-9]{1,5}$ ]] || fail 'VPS_PORT must be an integer between 1 and 65535.'
+          (( VPS_PORT > 0 && VPS_PORT < 65536 )) || fail 'VPS_PORT must be an integer between 1 and 65535.'
+          test -n "$SSH_PRIVATE_KEY" || fail 'Missing SSH_PRIVATE_KEY in the production environment.'
+          test -n "$SSH_KNOWN_HOSTS" || fail 'Missing SSH_KNOWN_HOSTS in the production environment (not VPS_KNOWN_HOSTS).'
+          trap 'printf "::error::Deployment failed at script line %s (exit %s).\n" "$LINENO" "$?" >&2' ERR
           umask 077
           mkdir -p "$RUNNER_TEMP/deploy-ssh"
           printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/deploy-ssh/key"
