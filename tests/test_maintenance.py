@@ -10,6 +10,27 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class MaintenanceTests(unittest.TestCase):
+    def test_deploy_backup_skips_media_and_keeps_other_full_backups(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "data"
+            source.mkdir()
+            (source / "threaddock.sqlite3").write_bytes(b"database")
+            media = source / "archive/blobs/10/photo"
+            media.parent.mkdir(parents=True)
+            media.write_bytes(b"media")
+            copies = root / "backups"
+            copies.mkdir()
+            unrelated = copies / "manual-full.tar.gz"
+            unrelated.write_bytes(b"full backup")
+            for day in range(1, 4):
+                destination = copies / f"202611{day:02}T000000Z-{'a' * 40}.database.tar.gz"
+                backup(source, destination, database_only=True, keep=2)
+            self.assertEqual(len(list(copies.glob("*.database.tar.gz"))), 2)
+            self.assertTrue(unrelated.exists())
+            with tarfile.open(destination) as archive:
+                self.assertEqual(archive.getnames(), ["threaddock.sqlite3"])
+
     def test_backup_includes_database_and_archive_but_not_cache_or_uploads(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

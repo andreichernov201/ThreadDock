@@ -1,87 +1,107 @@
-# GitHub Actions и автоматическое развёртывание
+# Автодеплой через GitHub
 
-Репозиторий: [andreichernov201/ThreadDock](https://github.com/andreichernov201/ThreadDock).
-Каждый push в `main` и каждый PR запускают Python-тесты, проверки стиля,
-тесты текстов/деморежима Mini App, проверку Compose и сборку Docker-образа.
-На VPS передаётся тот же проверенный SHA коммита. Код из PR не получает SSH-секреты.
-Actions закреплены по SHA; Dependabot предлагает обновления отдельными PR.
+После push в `main` GitHub параллельно запускает тесты и сборку Docker-образа.
+BuildKit переиспользует кеш слоёв: зависимости не устанавливаются заново при
+обычном изменении Python-кода. Новый проверенный образ публикуется в GHCR под
+SHA коммита. Деплой получает его неизменяемый digest, а не подвижный тег latest.
 
-Пока VPS не подключён, шаг deploy пропускается. Для запуска нужна repository
-variable `DEPLOY_ENABLED=true`. До её установки тесты и сборка уже работают.
-Команда ручного запуска — Actions → CI → Run workflow, ветка `main`; она тоже
-выполняет все проверки перед деплоем.
+Публикация образа возможна до завершения тестов. **Деплой начинается только при
+успехе обоих jobs**: test и image. PR не получает серверных секретов и не публикует
+образ. При новом push устаревшие тесты/сборки отменяются; уже начатый production
+деплой не прерывается новым push. В production одновременно работает одна доставка.
 
-## Один раз на VPS
+На VPS нет сборки и установки Python-зависимостей. Сервер скачивает готовые слои,
+проверяет конфигурацию, останавливает бота, сохраняет базу и запускает новый образ.
+Старая версия работает во время pull. Длительность зависит от тестов, сети и кеша;
+первый запуск значительно дольше последующих. Обычный путь — изменение кода,
+короткое скачивание нового слоя и пересоздание контейнера.
 
-Установи Docker Engine с Compose plugin и подготовь пользователя для деплоя.
-Он должен иметь доступ к Docker и владеть `/opt/threaddock`:
+## Первичная подготовка
 
-```sh
-sudo mkdir -p /opt/threaddock/{releases,shared,backups}
-sudo chown -R "$USER:$USER" /opt/threaddock
-chmod 700 /opt/threaddock/shared /opt/threaddock/backups
-```
+Поддерживается Ubuntu x86_64 с Docker Engine/Compose. Для 1 CPU / 2 GB RAM / 30 GB
+есть профиль `docs/vps-2gb.env.example`: один download worker, кеш 1 GiB, локальные
+медиа архива 4 GiB, запас свободного места 2 GiB. Это технические бюджеты диска,
+а не суточные квоты. Полноразмерные резервные копии требуют дополнительного места.
 
-Создай `/opt/threaddock/shared/.env` по примеру `.env.example`: `BOT_TOKEN`,
-`ARCHIVE_DOMAIN`, необходимые лимиты. Права файла — `600`. Этот файл остаётся на
-сервере; GitHub не читает и не перезаписывает токен бота.
-Домен и HTTPS: [vps.md](vps.md).
+1. Получи доступ root к VPS. Создай отдельную пару SSH Ed25519 для GitHub Actions.
+2. Передай **публичную** часть ключа на сервер, например `/root/threaddock-actions.pub`.
+3. Из проверенного checkout проекта запусти `bash scripts/bootstrap-vps.sh /root/threaddock-actions.pub`.
+   Скрипт ставит Docker из официального apt-репозитория, создаёт `threaddock-deploy`
+   и `/opt/threaddock`. Он не меняет root-пароль, SSH-порт и существующие SSH-ключи.
+4. Скопируй профиль в `/opt/threaddock/shared/.env`, заполни BOT_TOKEN на сервере.
+   Владелец файла — `threaddock-deploy`, права — `600`. Файл в Git не отправляется.
+5. Сверь SSH host key через доверенную консоль провайдера. Скрипт выводит публичный
+   `/etc/ssh/ssh_host_ed25519_key.pub`; из него составь запись known_hosts для IP/порта.
 
-Создай отдельную SSH-пару для GitHub Actions и добавь публичную часть в
-`authorized_keys` пользователя VPS. Закрытую часть храни только как GitHub Secret.
-Доступ к Docker фактически даёт административные возможности на сервере:
-используй отдельный ключ и не выдавай его участникам проекта.
+Пользователь deploy входит в группу Docker, что фактически даёт административные
+возможности. Деплой-ключ хранится в GitHub Secrets; не используй личный универсальный
+SSH-ключ. Параметр `restrict` запрещает PTY и перенаправления, сохраняя исполнение команд.
 
-## Настройки GitHub
+## GitHub
 
-В Settings → Environments создай `production`, разреши только ветку `main`.
-При необходимости включи обязательное ручное одобрение production-деплоя.
-В environment secrets укажи:
+В Settings → Environments создай `production`, разреши ветку `main`. Можно добавить
+ручное одобрение, если оно нужно перед каждым развёртыванием. Добавь environment secrets:
 
 | Secret | Значение |
 | --- | --- |
-| `VPS_HOST` | IPv4 или DNS-имя VPS, без `ssh://` |
-| `VPS_USER` | Пользователь с доступом к Docker и `/opt/threaddock` |
-| `VPS_PORT` | SSH-порт; можно не задавать для 22 |
-| `SSH_PRIVATE_KEY` | Отдельный закрытый SSH-ключ для деплоя |
-| `SSH_KNOWN_HOSTS` | Проверенная запись host key сервера для этого адреса/порта |
+| VPS_HOST | IP или DNS-имя сервера, без схемы |
+| VPS_USER | threaddock-deploy |
+| VPS_PORT | SSH-порт, по умолчанию 22 |
+| SSH_PRIVATE_KEY | Отдельный закрытый deploy-ключ |
+| SSH_KNOWN_HOSTS | Проверенная запись публичного host key сервера |
 
-Сверь fingerprint SSH host key через консоль хостинга или другой доверенный канал.
-Не отключай `StrictHostKeyChecking`: workflow использует закреплённый host key.
-Самостоятельно полученная непроверенная запись `ssh-keyscan` не подтверждает
-подлинность сервера.
+Затем создай **repository variable** `DEPLOY_ENABLED=true` в Actions → Variables.
+Без неё выполняются тесты, сборка и публикация, а сервер не затрагивается.
+Ручной запуск: Actions → CI → Run workflow, ветка main; он также проходит проверки.
 
-После заполнения секретов создай **repository variable** `DEPLOY_ENABLED=true`
-в Settings → Secrets and variables → Actions → Variables. Это именно переменная
-репозитория: environment variables ещё недоступны при вычислении условия job.
+Образ может оставаться приватным. Для pull workflow передаёт по защищённому SSH
+короткоживущий GITHUB_TOKEN с правом packages:read. Он используется только во временном
+Docker config, который удаляется при завершении. Постоянный GitHub PAT на VPS не нужен.
+Bot token остаётся в серверном .env и не читается workflow. Публикация из того же
+репозитория и OCI source label связывают GHCR package с доступом Actions.
 
-## Что делает деплой
+## Mini App и HTTPS
 
-1. Загружает исходники проверенного коммита в `/opt/threaddock/releases/SHA`.
-2. Берёт серверный `.env`, проверяет Compose и собирает образ, пока старый бот работает.
-3. Останавливает старого бота и сохраняет базу, WAL и архивные файлы в `backups`.
-   Пересоздаваемый кеш загрузчика и временные uploads/exports в копию не входят.
-4. Запускает контейнеры и ждёт Docker healthcheck до 180 секунд.
-5. После успешной проверки обновляет симлинк `/opt/threaddock/current`.
+Для старта бота домен не обязателен. Пока нет домена, production запускает только bot,
+а HTTP слушает loopback. Для Mini App направь DNS A на VPS, затем в серверном .env укажи:
 
-Том данных имеет постоянное имя `threaddock_threaddock-data`. Используй проект
-Compose `-p threaddock`, если запускаешь этот же экземпляр вручную. Не переноси
-живую установку с другого имени Compose без переноса её тома.
+```dotenv
+ARCHIVE_DOMAIN=archive.example.org
+ARCHIVE_PUBLIC_URL=https://archive.example.org
+```
 
-Сборка до остановки оставляет старый бот работающим при ошибке сборки. При ошибке
-после остановки новый бот останавливается, резервная копия сохраняется. Откат базы
-не выполняется автоматически: бот мог уже принять новые Telegram-сообщения.
-Проверь логи, сохрани текущее состояние и восстанови нужную согласованную копию
-перед запуском старого кода. Архивы резервных копий содержат приватные переписки;
-храни их защищённо. Скрипт не удаляет старые копии — контролируй место на диске.
+Создай `/opt/threaddock/shared/web.enabled` и запусти следующий деплой. Профиль web
+добавит Caddy с HTTPS на портах 80/443. Команды и меню Mini App бот применяет при старте.
+Покупать платные расширения/бэкапы хостинга для работы скрипта не требуется.
 
-Состояние:
+## Что сохраняется
+
+Данные — в постоянном томе `threaddock_threaddock-data`. Перед запуском новой версии
+копируются SQLite/WAL и служебные файлы. В `backups` остаются 10 таких копий; медиа и кеш
+при обновлении не пересоздаются. Отдельную полную копию архива можно сделать скриптом
+`backup.py` без --database-only при остановленном боте и хранить вне VPS. Копия базы
+перед деплоем не заменяет полноценную резервную копию медиа при потере диска.
+
+Если build, pull или проверка конфигурации не прошли, прежний бот продолжает работать.
+Если не удалось сохранить базу, скрипт пытается возобновить предыдущую версию, поскольку
+новая ещё не запускалась. При сбое после запуска новой версии бот останавливается:
+базу автоматически не откатываем, поскольку новые Telegram updates могли быть приняты.
+Сначала изучи логи и сохрани текущее состояние. Данные и резервные копии остаются.
+
+После успеха `/opt/threaddock/current` указывает на действующий релиз. Неиспользуемые
+образы именно ThreadDock старше недели очищаются; другие образы и тома не затрагиваются.
+
+Состояние работающего экземпляра:
 
 ```sh
 cd /opt/threaddock/current
-docker compose -p threaddock -f compose.yaml -f compose.vps.yaml ps
-docker compose -p threaddock -f compose.yaml -f compose.vps.yaml logs --tail=100 bot
+docker compose -p threaddock --env-file /opt/threaddock/shared/.env --env-file image.env -f compose.production.yaml ps
+docker compose -p threaddock --env-file /opt/threaddock/shared/.env --env-file image.env -f compose.production.yaml logs --tail=100 bot
 ```
 
-Справка: [GitHub workflow syntax](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax),
-[минимальные права Actions](https://docs.github.com/en/actions/reference/security/secure-use).
+Для команд Caddy добавь `--profile web` до имени команды. Все production-команды
+используют один project name threaddock. Никогда не применяй down -v к нужному тому.
+
+Первичная установка Docker: https://docs.docker.com/engine/install/ubuntu/
+Кеш: https://docs.docker.com/build/ci/github-actions/cache/
+GHCR: https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry

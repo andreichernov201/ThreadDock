@@ -1,0 +1,55 @@
+# Prebuilt image only: no source compilation on the VPS.
+services:
+  bot:
+    image: ${THREDDOCK_IMAGE:?Set immutable THREDDOCK_IMAGE reference}
+    env_file: .env
+    environment:
+      DATA_DIR: /app/data
+      ARCHIVE_HOST: 0.0.0.0
+      ARCHIVE_PORT: 8080
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - threaddock-data:/app/data
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 45s
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+  caddy:
+    image: caddy:2-alpine
+    profiles: [web]
+    restart: unless-stopped
+    environment:
+      ARCHIVE_DOMAIN: ${ARCHIVE_DOMAIN:-}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on: [bot]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+volumes:
+  threaddock-data:
+  caddy-data:
+  caddy-config:

@@ -9,12 +9,11 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   test:
+    concurrency:
+      group: test-${{ github.ref }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -35,30 +34,70 @@ jobs:
       - run: uvx --from ruff==0.16.7 ruff format --check .
       - run: deno fmt --check --no-config archive/web tests/web_test.js
       - run: deno test --no-config --allow-read=archive/web tests/web_test.js
-      - run: bash -n scripts/deploy.sh
+      - run: for file in scripts/*.sh; do bash -n "$file"; done
       - run: cp .env.example .env
       - run: docker compose config --quiet
       - run: ARCHIVE_DOMAIN=archive.example.org docker compose -f compose.yaml -f compose.vps.yaml config --quiet
+      - run: THREDDOCK_IMAGE=threaddock:ci docker compose -f compose.production.yaml config --quiet
+      - run: ARCHIVE_DOMAIN=archive.example.org THREDDOCK_IMAGE=threaddock:ci docker compose -f compose.production.yaml --profile web config --quiet
   image:
-    needs: test
+    concurrency:
+      group: image-${{ github.ref }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      reference: ${{ steps.publish.outputs.reference }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - run: docker build --tag threaddock:ci .
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          load: true
+          tags: threaddock:ci
+          platforms: linux/amd64
+          cache-from: type=gha,scope=threaddock-amd64
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max,scope=threaddock-amd64' || '' }}
       - name: Verify runtime as the container user
         run: >-
           docker run --rm --read-only --tmpfs /tmp:size=256m,mode=1777
           --cap-drop ALL --security-opt no-new-privileges:true
           threaddock:ci python main.py --check --no-token
+      - name: Sign in to GitHub Container Registry
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish immutable image
+        id: publish
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -euo pipefail
+          repository="ghcr.io/${GITHUB_REPOSITORY,,}"
+          tag="$repository:$GITHUB_SHA"
+          docker tag threaddock:ci "$tag"
+          docker push "$tag"
+          reference=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$tag" | awk -v prefix="$repository@" 'index($0,prefix)==1 {print;exit}')
+          [[ "$reference" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]
+          printf 'reference=%s\n' "$reference" >> "$GITHUB_OUTPUT"
   deploy:
     needs: [test, image]
     if: >-
       github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
       vars.DEPLOY_ENABLED == 'true'
     environment: production
+    permissions:
+      contents: read
+      packages: read
     runs-on: ubuntu-latest
     timeout-minutes: 35
     concurrency:
@@ -75,10 +114,15 @@ jobs:
           VPS_PORT: ${{ secrets.VPS_PORT }}
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
           SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+          IMAGE_REFERENCE: ${{ needs.image.outputs.reference }}
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
           [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$IMAGE_REFERENCE" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]
+          [[ "$REGISTRY_USER" =~ ^[a-zA-Z0-9_\[\]-]+$ ]]
           [[ "$VPS_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]]
           [[ "$VPS_USER" =~ ^[a-zA-Z_][a-zA-Z0-9_-]*$ ]]
           VPS_PORT=${VPS_PORT:-22}
@@ -104,5 +148,6 @@ jobs:
           git archive --format=tar.gz HEAD > "$RUNNER_TEMP/source.tar.gz"
           ssh -F "$RUNNER_TEMP/deploy-ssh/config" deploy "mkdir -p /opt/threaddock/releases/$GITHUB_SHA"
           scp -F "$RUNNER_TEMP/deploy-ssh/config" "$RUNNER_TEMP/source.tar.gz" "deploy:/opt/threaddock/releases/$GITHUB_SHA/source.tar.gz"
-          ssh -F "$RUNNER_TEMP/deploy-ssh/config" deploy "set -eu; cd /opt/threaddock/releases/$GITHUB_SHA; tar -xzf source.tar.gz; bash scripts/deploy.sh $GITHUB_SHA"
+          ssh -F "$RUNNER_TEMP/deploy-ssh/config" deploy "set -eu; cd /opt/threaddock/releases/$GITHUB_SHA; tar -xzf source.tar.gz"
+          printf '%s' "$REGISTRY_TOKEN" | ssh -F "$RUNNER_TEMP/deploy-ssh/config" deploy "cd /opt/threaddock/releases/$GITHUB_SHA; bash scripts/deploy.sh $GITHUB_SHA $IMAGE_REFERENCE $REGISTRY_USER"
           printf 'Deployed commit `%s` to production.\n' "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"

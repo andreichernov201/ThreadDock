@@ -12,6 +12,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certi
 COPY --from=uv /uv /usr/local/bin/uv
 COPY --from=deno /deno /usr/local/bin/deno
 WORKDIR /app
+LABEL org.opencontainers.image.source="https://github.com/andreichernov201/ThreadDock" \
+      org.opencontainers.image.title="ThreadDock" \
+      org.opencontainers.image.licenses="MIT"
 COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev \
     && uv pip install --python /opt/venv/bin/python "yt-dlp[default]==${YTDLP_VERSION}"
