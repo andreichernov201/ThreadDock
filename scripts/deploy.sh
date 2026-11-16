@@ -8,7 +8,10 @@ image=${2:?Expected immutable image reference}
 registry_user=${3:?Expected registry username}
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 2
 [[ "$image" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]] || exit 2
-[[ "$registry_user" =~ ^[a-zA-Z0-9_\[\]-]+$ ]] || exit 2
+[[ "$registry_user" =~ ^[a-zA-Z0-9_-]+(\[bot\])?$ ]] || {
+  echo 'Invalid GitHub registry username.' >&2
+  exit 2
+}
 base=/opt/threaddock
 release=$(pwd -P)
 [[ "$release" == "$base/releases/$sha" ]] || exit 2
