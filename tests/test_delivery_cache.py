@@ -7,6 +7,7 @@ from aiogram.methods import SendVideo
 
 from services.delivery import TelegramDelivery
 from services.jobs import JobQueue
+from storage.database import Database
 from tests.support import DatabaseFixture
 from tests.test_delivery import sent
 
@@ -57,3 +58,13 @@ class DeliveryCacheTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
 
     async def test_plain_video_has_no_redundant_source_button(self):
         self.assertIsNone(self.delivery.keyboard(self.job(), self.bundle()))
+
+    async def test_existing_sent_cache_is_migrated_before_disk_cleanup(self):
+        job, bundle = self.job(), self.bundle()
+        self.database.put_cache(job.cache_key, bundle, 0)
+        self.database.save_file_id(123, job.cache_key, "video.mp4", "video", "old-remote")
+        self.database.close()
+        self.database = Database(self.root / "test.sqlite3", self.root)
+        self.addCleanup(self.database.close)
+        self.database.delete_cache(job.cache_key)
+        self.assertIsNotNone(self.database.get_delivery_cache(123, job.cache_key, "video"))

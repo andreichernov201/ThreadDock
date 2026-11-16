@@ -78,7 +78,9 @@ class MediaActionTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         for number in range(10):
             self.database.enqueue(
                 [(f"callback:old-{number}", job.url, job.cache_key)],
-                job.destination, "video", 100,
+                job.destination,
+                "video",
+                100,
             )
         self.database.recover()
         first = self.database.claim()

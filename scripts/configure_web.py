@@ -35,8 +35,7 @@ def archive_origin(values: dict, host: str) -> str:
             raise ValueError("A public VPS address or ARCHIVE_DOMAIN is required.")
         domain = str(address).replace(".", "-").replace(":", "-") + ".sslip.io"
     if "." not in domain or not all(
-        re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label)
-        for label in domain.split(".")
+        re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in domain.split(".")
     ):
         raise ValueError("Invalid archive domain.")
     return origin or "https://" + domain

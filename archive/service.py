@@ -316,8 +316,7 @@ class ArchiveService:
         )
         if not owner["hide_content"]:
             previews = [
-                html.escape((row["body"] or "").strip()[:500] or T.ARCHIVE_SERVICE_EMPTY_PREVIEW)
-                for row in rows[:4]
+                html.escape((row["body"] or "").strip()[:500] or T.ARCHIVE_SERVICE_EMPTY_PREVIEW) for row in rows[:4]
             ]
             text += "\n\n" + "\n\n".join(previews)
         if len(rows) == 1 and rows[0]["kind"] == "keyword":

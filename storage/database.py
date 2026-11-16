@@ -62,6 +62,12 @@ class Database:
         if version > 2:
             raise RuntimeError("Database schema is newer than this application")
         self.connection.executescript(SCHEMA)
+        with self.connection:
+            self.connection.execute(
+                """INSERT OR IGNORE INTO telegram_cache(key,bundle,accessed_at)
+                SELECT c.key,c.bundle,c.accessed_at FROM cache c
+                WHERE EXISTS (SELECT 1 FROM telegram_files f WHERE f.cache_key=c.key)"""
+            )
         if version == 0:
             self.connection.execute("PRAGMA user_version=1")
 
@@ -166,9 +172,17 @@ class Database:
                     """INSERT INTO jobs(request_key,url,cache_key,chat_id,message_id,requester_id,
                     thread_id,business_id,mode,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                     (
-                        key, source["url"], source["cache_key"], source["chat_id"],
-                        source["message_id"], source["requester_id"], source["thread_id"],
-                        source["business_id"], mode, now, now,
+                        key,
+                        source["url"],
+                        source["cache_key"],
+                        source["chat_id"],
+                        source["message_id"],
+                        source["requester_id"],
+                        source["thread_id"],
+                        source["business_id"],
+                        mode,
+                        now,
+                        now,
                     ),
                 )
         return "accepted"
@@ -264,7 +278,7 @@ class Database:
             return None
         try:
             bundle = MediaBundle.deserialize(row[0], self.data_root)
-        except (ValueError, KeyError, TypeError):
+        except ValueError, KeyError, TypeError:
             return None
         items = bundle.items(mode)
         if not items or not all(self.file_id(bot_id, key, asset.filename, asset.kind) for asset in items):
