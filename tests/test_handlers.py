@@ -31,7 +31,7 @@ class HandlerTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
     async def test_private_message_queues_real_download(self):
         await handle_links(incoming(), self.app)
         self.assertEqual(self.database.claim().url, "https://www.youtube.com/watch?v=abc")
-        self.bot.send_message.assert_awaited_once()
+        self.bot.send_message.assert_not_awaited()
 
     async def test_plain_text_is_silent(self):
         await handle_links(incoming("Привет"), self.app)
@@ -62,10 +62,30 @@ class HandlerTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         self.database.status(first.id, "done")
         self.assertIn("vk.com", self.database.claim().url)
 
-    async def test_business_owner_and_bot_messages_do_not_loop(self):
+    async def test_business_owner_links_are_accepted_inside_reply_window(self):
+        self.database.save_connection("conn", 99, True, True)
+        self.database.touch_business_chat("conn", 10, datetime.now(UTC).timestamp())
+        await handle_links(incoming(sender=99, business="conn"), self.app)
+        self.assertEqual(self.database.claim().destination.requester_id, 99)
+
+    async def test_automated_business_messages_do_not_loop(self):
+        self.database.save_connection("conn", 99, True, True)
+        self.assertIsNone(await self.app.destination(incoming(sender=123, business="conn", bot_sender=True)))
+        automated = incoming(sender=99, business="conn").model_copy(
+            update={"sender_business_bot": User(id=123, is_bot=True, first_name="Bot")}
+        )
+        self.assertIsNone(await self.app.destination(automated))
+
+    async def test_owner_outgoing_does_not_create_a_reply_window(self):
         self.database.save_connection("conn", 99, True, True)
         self.assertIsNone(await self.app.destination(incoming(sender=99, business="conn")))
-        self.assertIsNone(await self.app.destination(incoming(sender=123, business="conn", bot_sender=True)))
+        self.assertFalse(self.database.business_can_send("conn", 10))
+
+    async def test_plain_incoming_message_opens_window_for_owner_link(self):
+        self.database.save_connection("conn", 99, True, True)
+        await handle_links(incoming(text="hello", sender=20, business="conn"), self.app)
+        await handle_links(incoming(sender=99, business="conn"), self.app)
+        self.assertIsNotNone(self.database.claim())
 
     async def test_business_incoming_can_queue(self):
         self.database.save_connection("conn", 99, True, True)

@@ -27,6 +27,9 @@ CREATE INDEX IF NOT EXISTS jobs_route ON jobs(business_id, chat_id, id, status);
 CREATE TABLE IF NOT EXISTS cache (
  key TEXT PRIMARY KEY, bundle TEXT NOT NULL, expires_at REAL NOT NULL, accessed_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS telegram_cache (
+ key TEXT PRIMARY KEY, bundle TEXT NOT NULL, accessed_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS telegram_files (
  bot_id INTEGER NOT NULL, cache_key TEXT NOT NULL, filename TEXT NOT NULL, kind TEXT NOT NULL,
  file_id TEXT NOT NULL, PRIMARY KEY(bot_id, cache_key, filename, kind)
@@ -59,6 +62,12 @@ class Database:
         if version > 2:
             raise RuntimeError("Database schema is newer than this application")
         self.connection.executescript(SCHEMA)
+        with self.connection:
+            self.connection.execute(
+                """INSERT OR IGNORE INTO telegram_cache(key,bundle,accessed_at)
+                SELECT c.key,c.bundle,c.accessed_at FROM cache c
+                WHERE EXISTS (SELECT 1 FROM telegram_files f WHERE f.cache_key=c.key)"""
+            )
         if version == 0:
             self.connection.execute("PRAGMA user_version=1")
 
@@ -80,6 +89,16 @@ class Database:
             self.connection.execute("UPDATE jobs SET status='queued' WHERE status='running'")
             result = self.connection.execute(
                 "UPDATE jobs SET status='uncertain',error_code='interrupted_delivery' WHERE status='sending'"
+            )
+            # Old callback IDs created one job per tap. Retire only those duplicate
+            # actions; links sent in distinct Telegram messages remain distinct requests.
+            self.connection.execute(
+                """UPDATE jobs AS j SET status='cancelled',error_code='duplicate_action'
+                WHERE j.status='queued' AND j.request_key LIKE 'callback:%'
+                AND EXISTS (SELECT 1 FROM jobs p WHERE p.id<j.id
+                  AND p.business_id=j.business_id AND p.chat_id=j.chat_id
+                  AND p.message_id=j.message_id AND p.cache_key=j.cache_key AND p.mode=j.mode
+                  AND p.status IN ('queued','running','sending','done','uncertain'))"""
             )
         return result.rowcount
 
@@ -118,6 +137,55 @@ class Database:
                 ],
             )
         return len(new)
+
+    def request_media(self, source_id: int, mode: str, capacity: int) -> str:
+        """Reuse a failed job or admit one alternative format, atomically per source."""
+        now = time.time()
+        with self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
+            source = self.get_job(source_id)
+            if source is None:
+                return "expired"
+            row = self.connection.execute(
+                """SELECT * FROM jobs WHERE business_id=? AND chat_id=?
+                AND message_id=? AND cache_key=? AND mode=? AND status!='cancelled'
+                ORDER BY (status='done') DESC,id DESC LIMIT 1""",
+                (source["business_id"], source["chat_id"], source["message_id"], source["cache_key"], mode),
+            ).fetchone()
+            if row and row["status"] in {"queued", "running", "sending", "done"}:
+                return row["status"]
+            active = self.connection.execute(
+                "SELECT count(*) FROM jobs WHERE status IN ('queued','running','sending')"
+            ).fetchone()[0]
+            if active >= capacity:
+                raise QueueFull()
+            if row:
+                # Keep accepted album checkpoints: retry only the remaining pieces.
+                self.connection.execute(
+                    """UPDATE jobs SET status='queued',attempts=0,error_code=NULL,
+                    available_at=0,updated_at=? WHERE id=?""",
+                    (now, row["id"]),
+                )
+            else:
+                key = f"media:{source['business_id']}:{source['chat_id']}:{source['message_id']}:{source['cache_key']}:{mode}"
+                self.connection.execute(
+                    """INSERT INTO jobs(request_key,url,cache_key,chat_id,message_id,requester_id,
+                    thread_id,business_id,mode,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        key,
+                        source["url"],
+                        source["cache_key"],
+                        source["chat_id"],
+                        source["message_id"],
+                        source["requester_id"],
+                        source["thread_id"],
+                        source["business_id"],
+                        mode,
+                        now,
+                        now,
+                    ),
+                )
+        return "accepted"
 
     def claim(self) -> Job | None:
         with self.connection:
@@ -194,7 +262,30 @@ class Database:
     def delete_cache(self, key: str) -> None:
         with self.connection:
             self.connection.execute("DELETE FROM cache WHERE key=?", (key,))
-            self.connection.execute("DELETE FROM telegram_files WHERE cache_key=?", (key,))
+            # Telegram file IDs outlive the disk cache. Their manifest is separate;
+            # evicting a large local file must not require downloading it again.
+
+    def remember_delivery(self, key: str, bundle: MediaBundle) -> None:
+        with self.connection:
+            self.connection.execute(
+                "INSERT OR REPLACE INTO telegram_cache VALUES (?,?,?)",
+                (key, bundle.serialize(self.data_root), time.time()),
+            )
+
+    def get_delivery_cache(self, bot_id: int, key: str, mode: str) -> MediaBundle | None:
+        row = self.connection.execute("SELECT bundle FROM telegram_cache WHERE key=?", (key,)).fetchone()
+        if row is None:
+            return None
+        try:
+            bundle = MediaBundle.deserialize(row[0], self.data_root)
+        except ValueError, KeyError, TypeError:
+            return None
+        items = bundle.items(mode)
+        if not items or not all(self.file_id(bot_id, key, asset.filename, asset.kind) for asset in items):
+            return None
+        with self.connection:
+            self.connection.execute("UPDATE telegram_cache SET accessed_at=? WHERE key=?", (time.time(), key))
+        return bundle
 
     def cache_candidates(self):
         return self.connection.execute("""SELECT key,bundle,expires_at FROM cache c
@@ -262,10 +353,20 @@ class Database:
         cutoff = time.time() - retention_days * 86400
         with self.connection:
             self.connection.execute(
-                "DELETE FROM deliveries WHERE job_id IN (SELECT id FROM jobs WHERE updated_at<? AND status IN ('done','failed','uncertain'))",
+                "DELETE FROM deliveries WHERE job_id IN (SELECT id FROM jobs WHERE updated_at<? AND status IN ('done','failed','uncertain','cancelled'))",
                 (cutoff,),
             )
             self.connection.execute(
-                "DELETE FROM jobs WHERE updated_at<? AND status IN ('done','failed','uncertain')", (cutoff,)
+                "DELETE FROM jobs WHERE updated_at<? AND status IN ('done','failed','uncertain','cancelled')", (cutoff,)
             )
             self.connection.execute("DELETE FROM business_chats WHERE incoming_at<?", (cutoff,))
+            self.connection.execute(
+                """DELETE FROM telegram_cache WHERE accessed_at<? AND NOT EXISTS
+                (SELECT 1 FROM jobs j WHERE j.cache_key=telegram_cache.key
+                AND j.status IN ('queued','running','sending'))""",
+                (time.time() - 30 * 86400,),
+            )
+            self.connection.execute(
+                """DELETE FROM telegram_files WHERE cache_key NOT IN
+                (SELECT key FROM cache UNION SELECT key FROM telegram_cache)"""
+            )

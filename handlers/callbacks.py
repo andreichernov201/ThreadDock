@@ -37,10 +37,16 @@ async def media_action(query: CallbackQuery, app: Application) -> None:
         await query.answer(T.HANDLERS_CALLBACKS_DELIVERY_UNAVAILABLE, show_alert=True)
         return
     try:
-        app.database.enqueue(
-            [(f"callback:{query.id}", row["url"], row["cache_key"])], destination, parts[2], app.settings.queue_capacity
-        )
+        outcome = app.database.request_media(row["id"], parts[2], app.settings.queue_capacity)
     except MediaError as error:
         await query.answer(str(error), show_alert=True)
         return
-    await query.answer(T.HANDLERS_CALLBACKS_QUEUED)
+    answers = {
+        "accepted": T.HANDLERS_CALLBACKS_QUEUED,
+        "queued": T.HANDLERS_CALLBACKS_ALREADY_QUEUED,
+        "running": T.HANDLERS_CALLBACKS_ALREADY_RUNNING,
+        "sending": T.HANDLERS_CALLBACKS_ALREADY_RUNNING,
+        "done": T.HANDLERS_CALLBACKS_ALREADY_DONE,
+        "expired": T.HANDLERS_CALLBACKS_JOB_EXPIRED,
+    }
+    await query.answer(answers[outcome])
