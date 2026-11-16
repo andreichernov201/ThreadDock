@@ -1,0 +1,70 @@
+import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter
+from aiogram.methods import SendVideo
+
+from core.errors import MediaError, MissingAsset
+from services.jobs import JobQueue
+from tests.support import DatabaseFixture
+
+
+class JobTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        super().setUp()
+        self.pipeline = SimpleNamespace(fetch=AsyncMock(return_value=self.bundle()))
+        self.delivery = SimpleNamespace(permitted=lambda target: True, deliver=AsyncMock(), text=AsyncMock())
+        self.queue = JobQueue(self.settings, self.database, self.pipeline, self.delivery)
+
+    async def test_success_is_terminal(self):
+        job = self.job()
+        await self.queue._process(job)
+        self.assertEqual(self.database.get_job(job.id)["status"], "done")
+
+    async def test_transient_source_failure_is_requeued(self):
+        job = self.job()
+        self.pipeline.fetch.side_effect = MediaError("Temporary", code="network", retryable=True)
+        await self.queue._process(job)
+        row = self.database.get_job(job.id)
+        self.assertEqual(row["status"], "queued")
+        self.assertEqual(row["error_code"], "network")
+
+    async def test_permanent_failure_notifies_once(self):
+        job = self.job()
+        self.pipeline.fetch.side_effect = MediaError("Unavailable", code="unavailable")
+        await self.queue._process(job)
+        self.assertEqual(self.database.get_job(job.id)["status"], "failed")
+        self.delivery.text.assert_awaited_once()
+
+    async def test_network_failure_during_delivery_is_not_replayed(self):
+        job = self.job()
+        self.delivery.deliver.side_effect = TelegramNetworkError(
+            method=SendVideo(chat_id=10, video="file"), message="lost response"
+        )
+        await self.queue._process(job)
+        self.assertEqual(self.database.get_job(job.id)["status"], "uncertain")
+        self.assertIsNone(self.database.claim())
+
+    async def test_telegram_rate_limit_schedules_instead_of_failing(self):
+        job = self.job()
+        self.delivery.deliver.side_effect = TelegramRetryAfter(
+            method=SendVideo(chat_id=10, video="file"), message="rate", retry_after=3
+        )
+        await self.queue._process(job)
+        self.assertEqual(self.database.get_job(job.id)["status"], "queued")
+        self.assertIsNone(self.database.claim())
+
+    async def test_missing_cache_refetches_and_keeps_progress(self):
+        job = self.job(mode="photos")
+        self.database.delivered_piece(job.id, 0, [11])
+        self.delivery.deliver.side_effect = [MissingAsset(), None]
+        await self.queue._process(job)
+        self.assertEqual(self.pipeline.fetch.call_args.kwargs, {"force": True})
+        self.assertEqual(self.delivery.deliver.call_args.args[0].progress, 1)
+
+    async def test_revoked_permission_prevents_download(self):
+        job = self.job()
+        self.delivery.permitted = lambda target: False
+        await self.queue._process(job)
+        self.pipeline.fetch.assert_not_awaited()

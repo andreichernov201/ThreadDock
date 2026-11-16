@@ -1,0 +1,173 @@
+"""Real FFmpeg/ffprobe commands against generated local fixtures, never the internet."""
+
+import json
+import shutil
+import subprocess
+import unittest
+from unittest.mock import patch
+
+from services.links import normalize_url
+from services.media import MediaTools
+from services.processes import ProcessResult
+from services.ytdlp import build_command
+from tests.support import DatabaseFixture
+
+
+async def local_process(command, *, timeout, cwd=None, **kwargs):
+    # Synchronous execution avoids Windows sandbox socketpair restrictions while
+    # testing the exact production FFmpeg arguments and its real output files.
+    result = subprocess.run(command, cwd=cwd, capture_output=True, timeout=timeout)
+    return ProcessResult(result.returncode, result.stdout, result.stderr)
+
+
+@unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg is not installed")
+class FFmpegIntegrationTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        super().setUp()
+        self.tools = MediaTools(self.settings)
+        self.patch = patch("services.media.run_process", side_effect=local_process)
+        self.patch.start()
+        self.addCleanup(self.patch.stop)
+
+    def fixture(self, name, color):
+        path = self.root / name
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                f"color={color}:s=160x120",
+                "-frames:v",
+                "1",
+                "-update",
+                "1",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=20,
+        )
+        return path
+
+    async def test_one_photo_without_music(self):
+        photo = self.fixture("one.jpg", "red")
+        asset, has_audio = await self.tools.slideshow([photo], None, self.root)
+        info = await self.tools.probe(self.root / asset.filename)
+        self.assertFalse(has_audio)
+        self.assertAlmostEqual(info.duration, 3, delta=0.15)
+        self.assertEqual(info.video_codec, "h264")
+
+    async def test_multiple_photos_follow_audio_duration(self):
+        photos = [self.fixture("one.jpg", "red"), self.fixture("two.jpg", "blue")]
+        music = self.root / "music.m4a"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=1.2",
+                "-c:a",
+                "aac",
+                str(music),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=20,
+        )
+        asset, has_audio = await self.tools.slideshow(photos, music, self.root)
+        info = await self.tools.probe(self.root / asset.filename)
+        self.assertTrue(has_audio)
+        self.assertAlmostEqual(info.duration, 1.2, delta=0.15)
+        self.assertEqual(info.audio_codec, "aac")
+        for second, expected in (("0.1", "red"), ("0.9", "blue")):
+            result = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-v",
+                    "error",
+                    "-ss",
+                    second,
+                    "-i",
+                    str(self.root / asset.filename),
+                    "-vf",
+                    "crop=10:10:540:960",
+                    "-frames:v",
+                    "1",
+                    "-pix_fmt",
+                    "rgb24",
+                    "-f",
+                    "rawvideo",
+                    "pipe:1",
+                ],
+                capture_output=True,
+                check=True,
+                timeout=20,
+            )
+            red, blue = sum(result.stdout[0::3]), sum(result.stdout[2::3])
+            self.assertGreater(red if expected == "red" else blue, blue if expected == "red" else red)
+
+
+@unittest.skipUnless(shutil.which("yt-dlp"), "yt-dlp is not installed")
+class ExtractorOptionsTests(DatabaseFixture, unittest.TestCase):
+    def test_real_cli_selects_separate_https_streams_without_network(self):
+        metadata = self.root / "fixture.json"
+        metadata.write_text(
+            json.dumps(
+                {
+                    "id": "fixture",
+                    "title": "Fixture",
+                    "extractor": "test",
+                    "extractor_key": "Test",
+                    "formats": [
+                        {
+                            "format_id": "combined",
+                            "url": "https://cdn.example/720.mp4",
+                            "protocol": "https",
+                            "ext": "mp4",
+                            "height": 720,
+                            "vcodec": "avc1",
+                            "acodec": "mp4a",
+                        },
+                        {
+                            "format_id": "video",
+                            "url": "https://cdn.example/1080.mp4",
+                            "protocol": "https",
+                            "ext": "mp4",
+                            "height": 1080,
+                            "vcodec": "avc1",
+                            "acodec": "none",
+                        },
+                        {
+                            "format_id": "audio",
+                            "url": "https://cdn.example/audio.m4a",
+                            "protocol": "https",
+                            "ext": "m4a",
+                            "vcodec": "none",
+                            "acodec": "mp4a",
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        command = build_command(self.settings, normalize_url("https://youtu.be/abc"), self.root, "http://127.0.0.1:1")
+        command = command[: command.index("--")] + [
+            "--simulate",
+            "--dump-single-json",
+            "--load-info-json",
+            str(metadata),
+        ]
+        result = subprocess.run(command, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+        selected = json.loads(result.stdout)
+        self.assertEqual([item["format_id"] for item in selected["requested_formats"]], ["video", "audio"])

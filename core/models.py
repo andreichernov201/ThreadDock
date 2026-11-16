@@ -1,0 +1,78 @@
+import json
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Literal
+
+DeliveryMode = Literal["video", "photos", "audio"]
+
+
+@dataclass(frozen=True)
+class Destination:
+    chat_id: int
+    message_id: int
+    requester_id: int
+    thread_id: int | None = None
+    business_id: str = ""
+
+
+@dataclass(frozen=True)
+class Job:
+    id: int
+    url: str
+    cache_key: str
+    destination: Destination
+    mode: DeliveryMode
+    attempts: int
+    progress: int = 0
+
+
+@dataclass(frozen=True)
+class Asset:
+    filename: str
+    kind: Literal["video", "document", "audio"]
+    duration: float = 0
+    width: int = 0
+    height: int = 0
+
+    def path(self, directory: Path) -> Path:
+        if Path(self.filename).name != self.filename or self.filename in {"", ".", ".."}:
+            raise ValueError("Invalid asset filename")
+        result = directory / self.filename
+        if result.is_symlink() or result.resolve().parent != directory.resolve():
+            raise ValueError("Asset escapes its directory")
+        return result
+
+
+@dataclass(frozen=True)
+class MediaBundle:
+    directory: Path
+    source_url: str
+    platform: str
+    title: str
+    video: Asset
+    originals: tuple[Asset, ...] = ()
+    audio: Asset | None = None
+    has_audio: bool = True
+
+    def items(self, mode: DeliveryMode) -> tuple[Asset, ...]:
+        if mode == "photos":
+            return self.originals
+        if mode == "audio":
+            return (self.audio,) if self.audio else ()
+        return (self.video,)
+
+    def serialize(self, data_root: Path) -> str:
+        data = asdict(self)
+        data["directory"] = self.directory.resolve().relative_to(data_root.resolve()).as_posix()
+        return json.dumps(data, ensure_ascii=False)
+
+    @classmethod
+    def deserialize(cls, payload: str, data_root: Path) -> MediaBundle:
+        data = json.loads(payload)
+        directory = (data_root / data.pop("directory")).resolve()
+        if not directory.is_relative_to(data_root.resolve()) or directory == data_root.resolve():
+            raise ValueError("Invalid cache directory")
+        data["video"] = Asset(**data["video"])
+        data["originals"] = tuple(Asset(**item) for item in data["originals"])
+        data["audio"] = Asset(**data["audio"]) if data["audio"] else None
+        return cls(directory=directory, **data)

@@ -1,0 +1,7 @@
+# Optional: docker compose -f compose.yaml -f compose.cookies.yaml up -d --build
+services:
+  bot:
+    environment:
+      COOKIES_FILE: /run/secrets/cookies.txt
+    volumes:
+      - ./secrets/cookies.txt:/run/secrets/cookies.txt:ro

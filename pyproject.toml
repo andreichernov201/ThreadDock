@@ -1,0 +1,17 @@
+[project]
+name = "threaddock"
+version = "0.1.0"
+description = "Telegram media downloader and isolated Business message archive"
+requires-python = ">=3.14"
+dependencies = [
+    "aiogram>=3,<4",
+    "aiohttp>=3.14,<4",
+    "python-dotenv>=1.2.4",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP"]
