@@ -382,6 +382,7 @@ class ServiceTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
 
 class ArchiveNoticeTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
     async def test_notice_uses_the_event_snapshot_not_the_latest_edit(self):
+        self.repo.update_owner(10, {"hide_content": False})
         at = time.time() - 100
         self.ingest(body="original", at=at)
         self.ingest(body="first edit", at=at, changed=at + 10)
