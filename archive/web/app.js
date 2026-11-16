@@ -199,6 +199,7 @@ function clearPrivate() {
   S.owner = null;
   S.meta = null;
   if (modal.open) modal.close();
+  document.querySelector("#modal-content").textContent = "";
 }
 function showLogin(
   message = COPY.OPEN_THIS_APP_USING_THE_BUTTON_IN_THREADDOCK,

@@ -48,6 +48,11 @@ jobs:
         with:
           persist-credentials: false
       - run: docker build --tag threaddock:ci .
+      - name: Verify runtime as the container user
+        run: >-
+          docker run --rm --read-only --tmpfs /tmp:size=256m,mode=1777
+          --cap-drop ALL --security-opt no-new-privileges:true
+          threaddock:ci python main.py --check --no-token
   deploy:
     needs: [test, image]
     if: >-

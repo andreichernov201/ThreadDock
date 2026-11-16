@@ -1,5 +1,5 @@
 FROM ghcr.io/astral-sh/uv:0.11.23 AS uv
-FROM denoland/deno:2.9.7 AS deno
+FROM denoland/deno:bin-2.9.7 AS deno
 FROM python:3.14-slim
 
 ARG YTDLP_VERSION=2026.8.19
@@ -10,7 +10,7 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=uv /uv /usr/local/bin/uv
-COPY --from=deno /usr/local/bin/deno /usr/local/bin/deno
+COPY --from=deno /deno /usr/local/bin/deno
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --locked --no-dev \
