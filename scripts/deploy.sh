@@ -50,6 +50,8 @@ docker run --rm --user 0:0 --network none \
 "${compose[@]}" stop -t 35 bot
 stage=backup
 on_failure() {
+  printf 'Deployment failed during %s. Recent bot logs:\n' "$stage" >&2
+  "${compose[@]}" logs --no-color --tail=30 bot >&2 || true
   "${compose[@]}" stop -t 35 bot || true
   if [[ "$stage" == backup && "$old_release" == "$base/releases/"* && -f "$old_release/image.env" ]]; then
     # No new application has run yet, so its database cannot have migrated.
