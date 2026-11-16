@@ -154,4 +154,15 @@ jobs:
           scp -F "$RUNNER_TEMP/deploy-ssh/config" "$RUNNER_TEMP/source.tar.gz" "deploy:/opt/threaddock/releases/$GITHUB_SHA/source.tar.gz"
           ssh -F "$RUNNER_TEMP/deploy-ssh/config" deploy "set -eu; cd /opt/threaddock/releases/$GITHUB_SHA; tar -xzf source.tar.gz"
           printf '%s' "$REGISTRY_TOKEN" | ssh -F "$RUNNER_TEMP/deploy-ssh/config" deploy "cd /opt/threaddock/releases/$GITHUB_SHA; bash scripts/deploy.sh $GITHUB_SHA $IMAGE_REFERENCE $REGISTRY_USER $VPS_HOST"
+          archive_url=$(ssh -F "$RUNNER_TEMP/deploy-ssh/config" deploy "cat /opt/threaddock/shared/web-origin")
+          [[ "$archive_url" =~ ^https://[a-zA-Z0-9][a-zA-Z0-9.-]*(:443)?$ ]] || fail 'Invalid archive HTTPS origin.'
+          curl --fail --silent --show-error --max-time 20 --retry 3 --retry-delay 3 "$archive_url/healthz"
+          curl --fail --silent --show-error --max-time 20 "$archive_url/" -o "$RUNNER_TEMP/archive.html"
+          grep -q '/assets/app.js' "$RUNNER_TEMP/archive.html" || fail 'Archive HTML did not load.'
+          for asset in app.js style.css texts.js; do
+            curl --fail --silent --show-error --max-time 20 "$archive_url/assets/$asset" -o /dev/null
+          done
+          auth_status=$(curl --silent --show-error --max-time 20 -o /dev/null -w '%{http_code}' "$archive_url/api/session")
+          [[ "$auth_status" == 401 ]] || fail 'Archive API must require Telegram authentication.'
+          printf '\nExternal archive checks passed: HTML, assets, HTTPS and API authentication.\n'
           printf 'Deployed commit `%s` to production.\n' "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
