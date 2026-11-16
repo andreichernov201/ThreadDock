@@ -15,6 +15,7 @@ async def configure_telegram(bot, archive_config):
     private = [
         ("start", T.SERVICES_TELEGRAM_SETUP_COMMAND_START),
         ("archive", T.SERVICES_TELEGRAM_SETUP_COMMAND_ARCHIVE),
+        ("archive_on", T.SERVICES_TELEGRAM_SETUP_COMMAND_ARCHIVE_ON),
         ("status", T.SERVICES_TELEGRAM_SETUP_COMMAND_STATUS),
         ("stats", T.SERVICES_TELEGRAM_SETUP_COMMAND_STATS),
         ("export", T.SERVICES_TELEGRAM_SETUP_COMMAND_EXPORT),

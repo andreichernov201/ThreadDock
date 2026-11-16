@@ -6,6 +6,7 @@ umask 077
 sha=${1:?Expected tested commit SHA}
 image=${2:?Expected immutable image reference}
 registry_user=${3:?Expected registry username}
+public_host=${4:-}
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || exit 2
 [[ "$image" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]] || exit 2
 [[ "$registry_user" =~ ^[a-zA-Z0-9_-]+(\[bot\])?$ ]] || {
@@ -23,9 +24,6 @@ ln -sfn "$base/shared/.env" "$release/.env"
 chmod 600 "$base/shared/.env"
 printf 'THREDDOCK_IMAGE=%s\n' "$image" > "$release/image.env"
 unset THREDDOCK_IMAGE
-compose=(docker compose -p threaddock --env-file "$base/shared/.env" --env-file "$release/image.env" -f "$release/compose.production.yaml")
-if [[ -f "$base/shared/web.enabled" ]]; then compose+=(--profile web); fi
-"${compose[@]}" config --quiet
 
 # Pull and verify while the existing bot is still serving requests.
 DOCKER_CONFIG=$(mktemp -d /tmp/threaddock-registry.XXXXXXXX)
@@ -36,6 +34,13 @@ cleanup() {
 trap cleanup EXIT
 docker login ghcr.io --username "$registry_user" --password-stdin >/dev/null
 docker pull "$image"
+if [[ -n "$public_host" ]]; then
+  docker run --rm --user 0:0 --network none \
+    -v "$base/shared:/config" "$image" python scripts/configure_web.py /config/.env "$public_host"
+fi
+compose=(docker compose -p threaddock --env-file "$base/shared/.env" --env-file "$release/image.env" -f "$release/compose.production.yaml")
+if [[ -f "$base/shared/web.enabled" ]]; then compose+=(--profile web); fi
+"${compose[@]}" config --quiet
 docker run --rm --env-file "$base/shared/.env" --read-only \
   --tmpfs /tmp:size=128m,mode=1777 --cap-drop ALL --security-opt no-new-privileges:true \
   "$image" python main.py --check
@@ -71,6 +76,18 @@ stage=starting
 "${compose[@]}" up -d --no-build --pull never --wait --wait-timeout 180
 ln -sfn "$release" "$base/current"
 trap - ERR
+
+if [[ -f "$base/shared/web.enabled" && -f "$base/shared/web-origin" ]]; then
+  public_url=$(cat "$base/shared/web-origin")
+  if ! curl --fail --silent --show-error --retry 12 --retry-delay 3 --retry-all-errors \
+    --max-time 10 "$public_url/healthz"; then
+    "${compose[@]}" logs --no-color --tail=30 caddy >&2 || true
+    printf '%s\n' 'The bot is healthy, but archive HTTPS is not reachable yet. Check ports 80/443 and DNS.' >&2
+    exit 1
+  fi
+  printf '\nArchive: %s\n' "$public_url"
+fi
+
 docker image prune -af \
   --filter 'label=org.opencontainers.image.source=https://github.com/andreichernov201/ThreadDock' \
   --filter until=168h >/dev/null || true

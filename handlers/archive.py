@@ -79,7 +79,20 @@ async def archive_command(message: Message, app: Application):
             reply_markup=app.archive.web_button(T.HANDLERS_ARCHIVE_SETTINGS_BUTTON),
         )
     else:
-        text = T.HANDLERS_ARCHIVE_ARCHIVE_INTRO if app.archive.config.public_url else T.HANDLERS_ARCHIVE_ARCHIVE_NO_WEB
+        state = (
+            T.HANDLERS_ARCHIVE_STATE_PAUSED
+            if owner["paused"]
+            else T.HANDLERS_ARCHIVE_STATE_ENABLED
+            if owner["enabled"]
+            else T.HANDLERS_ARCHIVE_STATE_DISABLED
+        )
+        connected = any(item["enabled"] for item in repository.connections(owner["owner_id"]))
+        text = T.HANDLERS_ARCHIVE_OVERVIEW.format(
+            state=state,
+            connection=T.HANDLERS_ARCHIVE_CONNECTED if connected else T.HANDLERS_ARCHIVE_NOT_CONNECTED,
+        )
+        if not app.archive.config.public_url:
+            text += "\n\n" + T.HANDLERS_ARCHIVE_ARCHIVE_NO_WEB
         await message.answer(text, reply_markup=app.archive.web_button())
 
 

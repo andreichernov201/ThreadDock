@@ -44,6 +44,9 @@ class TelegramDelivery:
         if self.permitted(destination):
             await self.bot.send_message(**target_options(destination), text=text, reply_markup=markup)
 
+    def cached(self, job: Job) -> MediaBundle | None:
+        return self.database.get_delivery_cache(self.bot.id, job.cache_key, job.mode)
+
     def _input(self, job: Job, bundle: MediaBundle, asset: Asset, *, use_cache: bool = True):
         cached = self.database.file_id(self.bot.id, job.cache_key, asset.filename, asset.kind) if use_cache else None
         if cached:
@@ -56,7 +59,7 @@ class TelegramDelivery:
         return FSInputFile(path)
 
     @staticmethod
-    def keyboard(job: Job, bundle: MediaBundle) -> InlineKeyboardMarkup:
+    def keyboard(job: Job, bundle: MediaBundle) -> InlineKeyboardMarkup | None:
         buttons = []
         if bundle.originals:
             buttons.append(
@@ -67,8 +70,7 @@ class TelegramDelivery:
             )
         if bundle.audio:
             buttons.append(InlineKeyboardButton(text=T.SERVICES_DELIVERY_AUDIO, callback_data=f"m:{job.id}:audio"))
-        buttons.append(InlineKeyboardButton(text=T.SERVICES_DELIVERY_SOURCE, url=bundle.source_url))
-        return InlineKeyboardMarkup(inline_keyboard=[buttons])
+        return InlineKeyboardMarkup(inline_keyboard=[buttons]) if buttons else None
 
     async def _send_piece(self, job: Job, bundle: MediaBundle, assets: tuple[Asset, ...], use_cache: bool):
         inputs = [self._input(job, bundle, asset, use_cache=use_cache) for asset in assets]
@@ -79,7 +81,7 @@ class TelegramDelivery:
             )
         asset, value = assets[0], inputs[0]
         if asset.kind == "video":
-            caption = f"{bundle.platform} · {bundle.title}"[:900]
+            caption = " ".join(bundle.title.split())[:220]
             if not bundle.has_audio:
                 caption += T.SERVICES_DELIVERY_NO_AUDIO
             result = await self.bot.send_video(
@@ -131,3 +133,4 @@ class TelegramDelivery:
                 remote = getattr(message, asset.kind, None)
                 if remote:
                     self.database.save_file_id(self.bot.id, job.cache_key, asset.filename, asset.kind, remote.file_id)
+            self.database.remember_delivery(job.cache_key, bundle)

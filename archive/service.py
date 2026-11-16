@@ -261,7 +261,7 @@ class ArchiveService:
         event_ids = task["payload"]["event_ids"]
         rows = [
             self.repository.db.execute(
-                "SELECT e.*,c.title,c.muted,m.body FROM archive_events e JOIN archive_chats c ON c.id=e.chat_id LEFT JOIN archive_messages m ON m.id=e.message_id WHERE e.owner_id=? AND e.id=?",
+                "SELECT e.*,c.title,c.muted,COALESCE(v.body,m.body) AS body FROM archive_events e JOIN archive_chats c ON c.id=e.chat_id LEFT JOIN archive_messages m ON m.id=e.message_id LEFT JOIN archive_versions v ON v.id=e.version_id AND v.owner_id=e.owner_id WHERE e.owner_id=? AND e.id=?",
                 (owner["owner_id"], event),
             ).fetchone()
             for event in event_ids
@@ -288,7 +288,7 @@ class ArchiveService:
                 events = json.loads(pending["payload"])["event_ids"]
                 candidates = [
                     self.repository.db.execute(
-                        "SELECT e.*,c.title,c.muted,m.body FROM archive_events e JOIN archive_chats c ON c.id=e.chat_id LEFT JOIN archive_messages m ON m.id=e.message_id WHERE e.owner_id=? AND e.id=?",
+                        "SELECT e.*,c.title,c.muted,COALESCE(v.body,m.body) AS body FROM archive_events e JOIN archive_chats c ON c.id=e.chat_id LEFT JOIN archive_messages m ON m.id=e.message_id LEFT JOIN archive_versions v ON v.id=e.version_id AND v.owner_id=e.owner_id WHERE e.owner_id=? AND e.id=?",
                         (owner["owner_id"], event),
                     ).fetchone()
                     for event in events
@@ -311,9 +311,15 @@ class ArchiveService:
             if len(rows) == 1
             else T.ARCHIVE_SERVICE_DELETED_COUNT.format(value1=len(rows))
         )
-        text = f"<b>{html.escape(title)}</b>\n{html.escape(rows[0]['title'])}"
+        text = T.ARCHIVE_SERVICE_NOTIFICATION_HEADER.format(
+            title=html.escape(title), chat=html.escape(rows[0]["title"])
+        )
         if not owner["hide_content"]:
-            text += "\n\n" + "\n\n".join(html.escape((row["body"] or "")[:500]) for row in rows[:4])
+            previews = [
+                html.escape((row["body"] or "").strip()[:500] or T.ARCHIVE_SERVICE_EMPTY_PREVIEW)
+                for row in rows[:4]
+            ]
+            text += "\n\n" + "\n\n".join(previews)
         if len(rows) == 1 and rows[0]["kind"] == "keyword":
             text += "\n" + html.escape(", ".join(json.loads(rows[0]["payload"])["matches"]))
         buttons = []
@@ -324,17 +330,6 @@ class ArchiveService:
                         text=T.ARCHIVE_SERVICE_OPEN_CHAT,
                         web_app=WebAppInfo(url=f"{self.config.public_url}/?chat={rows[0]['chat_id']}"),
                     )
-                ]
-            )
-        if rows[0]["message_id"]:
-            buttons.append(
-                [
-                    InlineKeyboardButton(
-                        text=T.ARCHIVE_SERVICE_FAVORITE, callback_data=f"a:fav:{rows[0]['message_id']}"
-                    ),
-                    InlineKeyboardButton(
-                        text=T.ARCHIVE_SERVICE_MUTE_CHAT, callback_data=f"a:mute:{rows[0]['chat_id']}"
-                    ),
                 ]
             )
         for job_id in batch_ids:

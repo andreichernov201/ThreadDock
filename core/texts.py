@@ -41,13 +41,13 @@ ARCHIVE_REPOSITORY_UNKNOWN_MESSAGE_FILTER = "Неизвестный фильтр
 ARCHIVE_REPOSITORY_UNKNOWN_EVENT_FILTER = "Неизвестный фильтр событий."
 ARCHIVE_SERVICE_MEDIA_PREVIEW_TOO_LARGE = "Медиа превышает допустимый размер локального просмотра."
 ARCHIVE_SERVICE_OPEN_ARCHIVE = "Открыть архив"
-ARCHIVE_SERVICE_MESSAGE_EDITED = "Сообщение изменено"
-ARCHIVE_SERVICE_MESSAGE_DELETED = "Сообщение удалено"
-ARCHIVE_SERVICE_UNKNOWN_DELETION = "Удалено сообщение, которое бот не получил"
+ARCHIVE_SERVICE_MESSAGE_EDITED = "✏️ Сообщение изменено"
+ARCHIVE_SERVICE_MESSAGE_DELETED = "🗑 Сообщение удалено"
+ARCHIVE_SERVICE_UNKNOWN_DELETION = "🗑 Удалено несохранённое сообщение"
 ARCHIVE_SERVICE_KEYWORD_MATCH = "Найдено ключевое слово"
 ARCHIVE_SERVICE_PROFILE_CHANGED = "Изменился профиль собеседника"
 ARCHIVE_SERVICE_ARCHIVE_EVENT = "Событие архива"
-ARCHIVE_SERVICE_DELETED_COUNT = "Удалено сообщений: {value1}"
+ARCHIVE_SERVICE_DELETED_COUNT = "🗑 Удалено сообщений: {value1}"
 ARCHIVE_SERVICE_OPEN_CHAT = "Открыть переписку"
 ARCHIVE_SERVICE_FAVORITE = "В избранное"
 ARCHIVE_SERVICE_MUTE_CHAT = "Тишина в чате"
@@ -104,7 +104,7 @@ HANDLERS_ARCHIVE_EXPORT_QUEUED = "Экспорт добавлен в очере�
 HANDLERS_ARCHIVE_DELETE_INSTRUCTIONS = "Удаление всего архива выполняется в настройках приложения после подтверждения. Оно удаляет базу и локальные файлы твоего архива. Копии в личной Telegram-группе удаляются отдельно через Telegram."
 HANDLERS_ARCHIVE_SETTINGS_BUTTON = "Настройки архива"
 HANDLERS_ARCHIVE_ARCHIVE_INTRO = "Твой архив ThreadDock: переписки, версии правок, удалённые сообщения, медиа и экспорт. Данные изолированы по владельцам. Включение сохранения подтверждается отдельно в приложении."
-HANDLERS_ARCHIVE_ARCHIVE_NO_WEB = "Веб-приложение ещё не подключено владельцем бота. Уже доступны /archive_on, /pause, /stats и /export. Для сбора переписок сначала подключи бота в настройках Telegram Business и выбери разрешённые чаты."
+HANDLERS_ARCHIVE_ARCHIVE_NO_WEB = "Веб-интерфейс пока не опубликован. Сохранение, /stats и /export работают отдельно от него."
 HANDLERS_ARCHIVE_VAULT_REQUEST_REQUIRED = "Сначала запроси выбор группы в настройках приложения."
 HANDLERS_ARCHIVE_VAULT_BOUND = "Личная группа-архив подключена. На каждого собеседника будет отдельная тема. Копирование существующих доступных файлов добавлено в очередь."
 HANDLERS_ARCHIVE_PRIVATE_ARCHIVE_REQUIRED = "Открой собственный архив в личном чате бота."
@@ -119,7 +119,7 @@ HANDLERS_CALLBACKS_INVALID_BUTTON = "Некорректная кнопка."
 HANDLERS_CALLBACKS_JOB_EXPIRED = "Срок хранения задачи истёк. Пришли ссылку заново."
 HANDLERS_CALLBACKS_SENDER_ONLY = "Эта кнопка доступна отправителю ссылки."
 HANDLERS_CALLBACKS_DELIVERY_UNAVAILABLE = "Отправка сейчас недоступна."
-HANDLERS_CALLBACKS_QUEUED = "Добавлено в очередь."
+HANDLERS_CALLBACKS_QUEUED = "Загрузка началась. Повторно нажимать не нужно."
 HANDLERS_COMMANDS_HELP = "Отправь ссылку обычным сообщением. Несколько ссылок обрабатываются по порядку.\n\nTikTok Photo Mode: MP4-слайдшоу, исходные фото и музыка. Кнопки доступны отправителю ссылки.\n\nДля группы: /enable и /disable доступны администраторам. Отключи Privacy Mode у @BotFather и добавь бота заново либо выдай ему права администратора, чтобы он получал обычные сообщения со ссылками.\n\nChat Automation подключается в настройках Telegram Business. Бот отвечает только во включённых переписках и при наличии разрешения на ответы.\n\nЛичный архив: /archive. После отдельного включения сохраняет доступные боту сообщения, версии правок и удаления. /stats — статистика, /export — экспорт, /pause — пауза, /mute — уведомления, /delete_me — удаление данных.\n\nУдалённые, закрытые и недоступные в регионе сервера публикации могут не скачиваться. Большие файлы подготавливаются с учётом ограничения Telegram.\n\n/status показывает задачи. Если отправка не подтверждена, сначала проверь чат, затем повтори запрос кнопкой или новой ссылкой."
 HANDLERS_COMMANDS_GROUP_ONLY = "Эта команда используется администратором в группе."
 HANDLERS_COMMANDS_GROUP_ADMIN_ONLY = "Изменить эту настройку может администратор группы."
@@ -133,7 +133,7 @@ HANDLERS_COMMANDS_STATUS_FAILED = "С ошибкой"
 HANDLERS_COMMANDS_STATUS_UNCERTAIN = "Отправка не подтверждена"
 HANDLERS_COMMANDS_NO_JOBS = "Задач пока нет. Пришли ссылку на публикацию."
 HANDLERS_LINKS_LINKS_ACCEPTED = "Принято ссылок: {count}. Пришлю результат сюда."
-HANDLERS_START_WELCOME = "Привет! Я ThreadDock.\n\nПришли ссылку на видео из TikTok, Instagram, YouTube, VK или X — скачаю и отправлю готовый файл со звуком. Можно прислать несколько ссылок.\n\nTikTok Photo Mode превращаю в слайдшоу с музыкой. Под результатом будут кнопки для фотографий и аудио.\n\n/archive — личный архив переписок\n/help — помощь\n/status — мои задачи загрузки\nВ группе администратор включает обработку командой /enable."
+HANDLERS_START_WELCOME = "Привет! Я ThreadDock.\n\nПришли ссылку — отправлю видео. Поддерживаю TikTok, Instagram, YouTube, VK, X и Vimeo. Для TikTok с фотографиями сделаю слайдшоу; фото и музыку можно забрать кнопками под ним.\n\nВ подключённых Business-переписках обрабатываю и твои ссылки, и ссылки собеседника, когда Telegram разрешает отправку.\n\n/archive — архив переписок и его настройка\n/status — задачи загрузки\n/help — помощь"
 SERVICES_APPLICATION_RESTARTING = "Бот перезапускается. Отправь ссылку немного позже."
 SERVICES_DELIVERY_FILE_TOO_LARGE = "Файл превышает допустимый размер Telegram."
 SERVICES_DELIVERY_ORIGINAL_PHOTOS = "Фото-оригиналы ({value1})"
@@ -153,7 +153,7 @@ SERVICES_JOBS_CHAT_DISABLED = "Обработка в этом чате откл�
 SERVICES_JOBS_SEND_UNCERTAIN = "Telegram не подтвердил отправку. Проверь переписку перед повторной попыткой."
 SERVICES_JOBS_FILE_REJECTED = "Telegram отклонил файл или ответ на сообщение. Попробуй прислать ссылку в личку бота."
 SERVICES_JOBS_INTERNAL_ERROR = "Не удалось обработать публикацию из-за внутренней ошибки."
-SERVICES_JOBS_RETRY = "Повторить"
+SERVICES_JOBS_RETRY = "Повторить загрузку"
 SERVICES_LINKS_INVALID_CHARACTERS = "В ссылке есть недопустимые символы."
 SERVICES_LINKS_INVALID_URL = "Некорректная ссылка."
 SERVICES_LINKS_INVALID_HOST = "Некорректный адрес сайта."
@@ -227,3 +227,27 @@ SERVICES_YTDLP_DOWNLOAD_TOO_LARGE = "Видео превышает допуст�
 STORAGE_LOCK_INSTANCE_RUNNING = "Другой экземпляр бота уже использует эту папку данных."
 COMMON_PRESENT = "есть"
 COMMON_ABSENT = "нет"
+
+HANDLERS_CALLBACKS_ALREADY_QUEUED = "Уже в очереди. Пришлю файл один раз."
+
+HANDLERS_CALLBACKS_ALREADY_RUNNING = "Уже загружаю или отправляю. Подожди немного."
+
+HANDLERS_CALLBACKS_ALREADY_DONE = "Этот файл уже отправлен в переписку."
+
+ARCHIVE_SERVICE_NOTIFICATION_HEADER = "<b>{title}</b>\n{chat}"
+
+ARCHIVE_SERVICE_EMPTY_PREVIEW = "Медиа без подписи или содержимое, которое бот не успел сохранить."
+
+HANDLERS_ARCHIVE_OVERVIEW = "Архив переписок\n\nСохранение: {state}\nTelegram Business: {connection}\n\n1. Подключи ThreadDock в Telegram → Настройки → Telegram Business → Чат-боты и выбери переписки.\n2. Включи сохранение командой /archive_on или в приложении.\n3. Открой архив кнопкой ниже: там переписки, поиск, правки, удаления и медиа.\n\nАрхив сохраняет новые сообщения после включения. Старую историю Telegram бот получить не может.\n/pause — пауза, /mute — уведомления, /export — выгрузить архив."
+
+HANDLERS_ARCHIVE_STATE_ENABLED = "включено"
+
+HANDLERS_ARCHIVE_STATE_DISABLED = "выключено — отправь /archive_on"
+
+HANDLERS_ARCHIVE_STATE_PAUSED = "на паузе — отправь /pause"
+
+HANDLERS_ARCHIVE_CONNECTED = "подключён"
+
+HANDLERS_ARCHIVE_NOT_CONNECTED = "подключение пока не найдено"
+
+SERVICES_TELEGRAM_SETUP_COMMAND_ARCHIVE_ON = "Включить сохранение переписок"

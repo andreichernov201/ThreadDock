@@ -1,4 +1,5 @@
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -14,7 +15,9 @@ class JobTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         super().setUp()
         self.pipeline = SimpleNamespace(fetch=AsyncMock(return_value=self.bundle()))
-        self.delivery = SimpleNamespace(permitted=lambda target: True, deliver=AsyncMock(), text=AsyncMock())
+        self.delivery = SimpleNamespace(
+            permitted=lambda target: True, cached=lambda job: None, deliver=AsyncMock(), text=AsyncMock()
+        )
         self.queue = JobQueue(self.settings, self.database, self.pipeline, self.delivery)
 
     async def test_success_is_terminal(self):
@@ -68,3 +71,17 @@ class JobTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         self.delivery.permitted = lambda target: False
         await self.queue._process(job)
         self.pipeline.fetch.assert_not_awaited()
+
+    async def test_permanent_source_error_has_no_retry_button(self):
+        job = self.job()
+        self.pipeline.fetch.side_effect = MediaError("Unavailable", code="unavailable")
+        await self.queue._process(job)
+        self.assertIsNone(self.delivery.text.call_args.args[2])
+
+    async def test_exhausted_transient_error_keeps_one_working_retry_button(self):
+        job = self.job(mode="photos")
+        self.queue.settings = replace(self.settings, retries=0)
+        self.pipeline.fetch.side_effect = MediaError("Temporary", code="network", retryable=True)
+        await self.queue._process(job)
+        keyboard = self.delivery.text.call_args.args[2]
+        self.assertEqual(keyboard.inline_keyboard[0][0].callback_data, f"m:{job.id}:photos")

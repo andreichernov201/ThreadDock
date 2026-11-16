@@ -67,7 +67,9 @@ class JobQueue:
         try:
             if not self.delivery.permitted(job.destination):
                 raise MediaError(T.SERVICES_JOBS_CHAT_DISABLED, code="permission_revoked")
-            bundle = await self.pipeline.fetch(job.url)
+            bundle = self.delivery.cached(job)
+            if bundle is None:
+                bundle = await self.pipeline.fetch(job.url)
             try:
                 await self.delivery.deliver(job, bundle)
             except MissingAsset:
@@ -84,7 +86,7 @@ class JobQueue:
             self.database.status(job.id, "queued", "telegram_rate_limit", delay=error.retry_after + 1)
         except TelegramNetworkError, TelegramServerError:
             self.database.status(job.id, "uncertain", "delivery_uncertain")
-            await self._notify(job, T.SERVICES_JOBS_SEND_UNCERTAIN)
+            await self._notify(job, T.SERVICES_JOBS_SEND_UNCERTAIN, retry=True)
         except (TelegramForbiddenError, TelegramBadRequest) as error:
             self.database.status(job.id, "failed", "telegram_rejected")
             logger.warning("job=%s Telegram rejected delivery type=%s", job.id, type(error).__name__)
@@ -95,7 +97,7 @@ class JobQueue:
                 self.database.status(job.id, "queued", error.code, delay=min(30, 2**job.attempts))
             else:
                 self.database.status(job.id, "failed", error.code)
-                await self._notify(job, str(error))
+                await self._notify(job, str(error), retry=error.retryable)
             logger.warning("job=%s code=%s", job.id, error.code)
         except Exception as error:
             # Do not log exception text/tracebacks: upstream exceptions can contain signed URLs.
@@ -104,10 +106,14 @@ class JobQueue:
             logger.error("job=%s unexpected type=%s", job.id, type(error).__name__)
             await self._notify(job, T.SERVICES_JOBS_INTERNAL_ERROR)
 
-    async def _notify(self, job: Job, message: str) -> None:
-        markup = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text=T.SERVICES_JOBS_RETRY, callback_data=f"m:{job.id}:video")]]
-        )
+    async def _notify(self, job: Job, message: str, *, retry: bool = False) -> None:
+        markup = None
+        if retry:
+            markup = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text=T.SERVICES_JOBS_RETRY, callback_data=f"m:{job.id}:{job.mode}")]
+                ]
+            )
         try:
             await self.delivery.text(job.destination, message, markup)
         except TelegramAPIError:

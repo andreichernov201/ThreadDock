@@ -46,9 +46,17 @@ class Application:
             if info is None:
                 self.connection_changed(await self.bot.get_business_connection(identifier))
                 info = self.database.connection_info(identifier)
-            if not info["enabled"] or not info["can_reply"] or info["owner_id"] == message.from_user.id:
+            if not info or not info["enabled"] or not info["can_reply"]:
                 return None
-            self.database.touch_business_chat(identifier, message.chat.id, message.date.timestamp())
+            if info["owner_id"] != message.from_user.id:
+                self.database.touch_business_chat(identifier, message.chat.id, message.date.timestamp())
+            else:
+                # Outgoing messages do not extend Telegram's incoming-message window.
+                reply = message.reply_to_message
+                if reply and reply.from_user and reply.from_user.id != info["owner_id"] and not reply.from_user.is_bot:
+                    self.database.touch_business_chat(identifier, message.chat.id, reply.date.timestamp())
+                if not self.database.business_can_send(identifier, message.chat.id):
+                    return None
         elif message.chat.type in {"group", "supergroup"}:
             if not self.database.group_enabled(message.chat.id, self.settings.groups_enabled):
                 return None

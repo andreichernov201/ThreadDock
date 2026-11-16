@@ -378,3 +378,29 @@ class ServiceTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
             writer.write(b"12345")
         with self.assertRaises(ValueError):
             self.service.safe_path("../../outside", self.service.blobs)
+
+
+class ArchiveNoticeTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_notice_uses_the_event_snapshot_not_the_latest_edit(self):
+        at = time.time() - 100
+        self.ingest(body="original", at=at)
+        self.ingest(body="first edit", at=at, changed=at + 10)
+        self.ingest(body="later edit", at=at, changed=at + 20)
+        task = self.repo.claim()
+        await self.service._process(task)
+        notice = self.bot.send_message.call_args.args[1]
+        self.assertIn("first edit", notice)
+        self.assertNotIn("later edit", notice)
+        self.assertIsNone(self.bot.send_message.call_args.kwargs["reply_markup"])
+
+    async def test_notice_only_offers_the_published_archive(self):
+        self.service.config = ArchiveSettings(public_url="https://archive.example.org")
+        self.ingest()
+        self.repo.delete_messages(10, "connection-10", 30, [1], "Test chat")
+        await self.service._process(self.repo.claim())
+        keyboard = self.bot.send_message.call_args.kwargs["reply_markup"]
+        self.assertEqual(len(keyboard.inline_keyboard), 1)
+        self.assertEqual(len(keyboard.inline_keyboard[0]), 1)
+        button = keyboard.inline_keyboard[0][0]
+        self.assertIsNotNone(button.web_app)
+        self.assertIsNone(button.callback_data)
