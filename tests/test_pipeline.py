@@ -55,7 +55,10 @@ class PipelineTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
             (directory / "video.mp4").write_bytes(b"fixture-video")
             (directory / "original.jpg").write_bytes(b"fixture-image")
             return MediaBundle(
-                directory, link.url, link.platform, "Photo",
+                directory,
+                link.url,
+                link.platform,
+                "Photo",
                 Asset("video.mp4", "video", 1, 320, 240),
                 (Asset("original.jpg", "document"),),
             )
