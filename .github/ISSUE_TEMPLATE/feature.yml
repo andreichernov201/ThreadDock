@@ -1,0 +1,17 @@
+name: Предложение
+description: Изменение поведения или новая возможность
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Задача
+      description: Какой сценарий сейчас не поддерживается?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Ожидаемое поведение
+    validations:
+      required: true

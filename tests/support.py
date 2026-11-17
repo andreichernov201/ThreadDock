@@ -10,7 +10,8 @@ from storage.database import Database
 class DatabaseFixture:
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
+        # Match load_settings: normalize macOS /var and Windows short-path aliases.
+        self.root = Path(self.temp.name).resolve()
         self.settings = Settings(
             token="123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi",
             data_dir=self.root,

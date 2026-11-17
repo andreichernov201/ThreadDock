@@ -1,0 +1,32 @@
+name: Ошибка
+description: Воспроизводимая проблема в боте, архиве или развёртывании
+title: ""
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Версия
+      description: SHA коммита или тег образа
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Окружение
+      description: ОС, версия Python, Docker или локальный запуск
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Воспроизведение
+      description: Шаги, ожидаемый и фактический результат. Без токенов, cookies и переписки.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Код ошибки и логи
+      description: Только очищенный технический фрагмент без приватных данных
+      render: text

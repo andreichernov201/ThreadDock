@@ -1,0 +1,16 @@
+{
+  "name": "ThreadDock",
+  "build": { "dockerfile": "Dockerfile" },
+  "mounts": [
+    "source=threaddock-dev-venv,target=${containerWorkspaceFolder}/.venv,type=volume",
+    "source=threaddock-dev-node,target=${containerWorkspaceFolder}/node_modules,type=volume"
+  ],
+  "postCreateCommand": "uv sync --locked --extra media && npm ci && npx playwright install --with-deps chromium",
+  "forwardPorts": [8080],
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python", "charliermarsh.ruff"],
+      "settings": { "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python" }
+    }
+  }
+}

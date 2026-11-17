@@ -1,8 +1,7 @@
-FROM ghcr.io/astral-sh/uv:0.11.23 AS uv
-FROM denoland/deno:bin-2.9.7 AS deno
-FROM python:3.14-slim
+FROM ghcr.io/astral-sh/uv:0.13.9 AS uv
+FROM denoland/deno:bin-2.9.8 AS deno
+FROM python:3.15-slim
 
-ARG YTDLP_VERSION=2026.10.26
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
     UV_PROJECT_ENVIRONMENT=/opt/venv PATH="/opt/venv/bin:$PATH" \
     DATA_DIR=/app/data DENO_DIR=/tmp/deno-cache DENO_NO_UPDATE_CHECK=1 DENO_NO_PROMPT=1
@@ -16,8 +15,7 @@ LABEL org.opencontainers.image.source="https://github.com/andreichernov201/Threa
       org.opencontainers.image.title="ThreadDock" \
       org.opencontainers.image.licenses="MIT"
 COPY pyproject.toml uv.lock ./
-RUN uv sync --locked --no-dev \
-    && uv pip install --python /opt/venv/bin/python "yt-dlp[default,curl-cffi]==${YTDLP_VERSION}"
+RUN uv sync --locked --no-dev --extra media
 COPY . .
 RUN useradd --uid 10001 --create-home bot \
     && mkdir -p /app/data && chown bot:bot /app/data \

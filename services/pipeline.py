@@ -153,7 +153,7 @@ class MediaPipeline:
                 remove_directory(bundle.directory, self.cache)
                 total -= size
                 free += size
-            except OSError, ValueError:
+            except (OSError, ValueError):
                 pass
             self.database.delete_cache(row["key"])
         # A crash between an atomic directory rename and SQLite commit can leave an orphan.

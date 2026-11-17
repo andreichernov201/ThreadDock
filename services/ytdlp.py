@@ -129,6 +129,6 @@ class YtDlpAdapter:
         if metadata.is_file() and metadata.stat().st_size < 8 * 1024**2:
             try:
                 title = str(json.loads(metadata.read_text(encoding="utf-8")).get("title") or title)[:500]
-            except ValueError, OSError:
+            except (ValueError, OSError):
                 pass
         return files[0], title

@@ -1,5 +1,7 @@
 """Bounded public HTTPS requests. Redirects pass the same SSRF guard as yt-dlp."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
