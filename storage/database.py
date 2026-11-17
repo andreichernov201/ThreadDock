@@ -123,7 +123,7 @@ class Database:
                 for item in requests
                 if not self.connection.execute("SELECT 1 FROM jobs WHERE request_key=?", (item[0],)).fetchone()
                 and not self.connection.execute(
-                    "SELECT 1 FROM jobs WHERE cache_key=? AND business_id=? AND chat_id=? AND mode=? AND status IN ('queued','running','sending')",
+                    "SELECT 1 FROM jobs WHERE cache_key=? AND business_id=? AND chat_id=? AND mode=? AND status IN ('queued','running','sending','uncertain')",
                     (item[2], destination.business_id, destination.chat_id, mode),
                 ).fetchone()
             ]
@@ -167,7 +167,7 @@ class Database:
                 ORDER BY (status='done') DESC,id DESC LIMIT 1""",
                 (source["business_id"], source["chat_id"], source["message_id"], source["cache_key"], mode),
             ).fetchone()
-            if row and row["status"] in {"queued", "running", "sending", "done"}:
+            if row and row["status"] in {"queued", "running", "sending", "done", "uncertain"}:
                 return row["status"]
             active = self.connection.execute(
                 "SELECT count(*) FROM jobs WHERE status IN ('queued','running','sending')"

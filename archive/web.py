@@ -347,7 +347,13 @@ def create_web_app(service) -> web.Application:
     @routes.get("/api/messages/{id:[0-9]+}")
     async def message(request):
         result = repository.message(request["owner"]["owner_id"], int(request.match_info["id"]))
-        if result is None:
+        if (
+            result is None
+            or not repository.db.execute(
+                "SELECT 1 FROM archive_events WHERE owner_id=? AND message_id=? AND kind!='new' LIMIT 1",
+                (request["owner"]["owner_id"], int(request.match_info["id"])),
+            ).fetchone()
+        ):
             raise LookupError()
         return web.json_response(result)
 

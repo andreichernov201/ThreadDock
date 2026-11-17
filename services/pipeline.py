@@ -66,7 +66,9 @@ class MediaPipeline:
         async with self.locks.hold(link.cache_key):
             cached = self.database.get_cache(link.cache_key)
             if cached and not force:
+                logger.info("media_cache hit=disk platform=%s", link.platform)
                 return cached
+            logger.info("media_fetch platform=%s force=%s", link.platform, force)
             if (
                 shutil.disk_usage(self.settings.data_dir).free
                 < self.settings.min_free_bytes + self.settings.max_download_bytes * 2

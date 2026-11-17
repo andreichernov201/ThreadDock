@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 async def main() -> None:
     settings = load_settings()
+    configure_logging(settings.data_dir / "logs")
     validate_runtime(settings)
     with InstanceLock(settings.data_dir / "app.lock"):
         database = Database(settings.data_dir / "threaddock.sqlite3", settings.data_dir)
@@ -50,7 +51,12 @@ async def main() -> None:
 
                 @dispatcher.errors()
                 async def safe_error(event: ErrorEvent) -> bool:
-                    logger.error("Update processing failed type=%s", type(event.exception).__name__)
+                    logger.error(
+                        "update_failed update=%s type=%s",
+                        event.update.update_id,
+                        type(event.exception).__name__,
+                        exc_info=(type(event.exception), event.exception, event.exception.__traceback__),
+                    )
                     if isinstance(event.exception, sqlite3.Error):
                         # Stop before the next getUpdates offset acknowledges data we could not persist.
                         await dispatcher.stop_polling()

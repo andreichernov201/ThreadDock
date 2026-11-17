@@ -18,6 +18,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from config import Settings
 from core import texts as T
 from core.errors import MediaError, MissingAsset
+from core.logging import log_context
 from core.models import Job
 from services.delivery import TelegramDelivery
 from services.pipeline import MediaPipeline
@@ -64,20 +65,37 @@ class JobQueue:
             await self._process(job)
 
     async def _process(self, job: Job) -> None:
+        with log_context(
+            job=job.id,
+            chat=job.destination.chat_id,
+            message=job.destination.message_id,
+            business=bool(job.destination.business_id),
+            mode=job.mode,
+            attempt=job.attempts,
+            media=job.cache_key[:12],
+        ):
+            await self._run_job(job)
+
+    async def _run_job(self, job: Job) -> None:
+        started = time.monotonic()
+        stage = "permission"
         try:
             if not self.delivery.permitted(job.destination):
                 raise MediaError(T.SERVICES_JOBS_CHAT_DISABLED, code="permission_revoked")
             bundle = self.delivery.cached(job)
+            logger.info("download_start cache=%s progress=%s", "telegram" if bundle else "miss", job.progress)
             if bundle is None:
+                stage = "download"
                 bundle = await self.pipeline.fetch(job.url)
             try:
+                stage = "delivery"
                 await self.delivery.deliver(job, bundle)
             except MissingAsset:
                 bundle = await self.pipeline.fetch(job.url, force=True)
                 row = self.database.get_job(job.id)
                 await self.delivery.deliver(replace(job, progress=row["progress"]), bundle)
             self.database.complete_job(job.id)
-            logger.info("job=%s completed", job.id)
+            logger.info("download_done elapsed_ms=%s", round((time.monotonic() - started) * 1000))
         except asyncio.CancelledError:
             row = self.database.get_job(job.id)
             self.database.status(job.id, "uncertain" if row["status"] == "sending" else "queued", "shutdown")
@@ -86,6 +104,7 @@ class JobQueue:
             self.database.status(job.id, "queued", "telegram_rate_limit", delay=error.retry_after + 1)
         except TelegramNetworkError, TelegramServerError:
             self.database.status(job.id, "uncertain", "delivery_uncertain")
+            logger.warning("download_uncertain stage=%s reason=telegram_network", stage)
             await self._notify(job, T.SERVICES_JOBS_SEND_UNCERTAIN)
         except (TelegramForbiddenError, TelegramBadRequest) as error:
             self.database.status(job.id, "failed", "telegram_rejected")
@@ -100,12 +119,18 @@ class JobQueue:
                 if error.retryable:
                     self.database.offer_retry(job.id)
                 await self._notify(job, str(error), retry=error.retryable)
-            logger.warning("job=%s code=%s", job.id, error.code)
-        except Exception as error:
-            # Do not log exception text/tracebacks: upstream exceptions can contain signed URLs.
+            logger.warning(
+                "download_failed stage=%s code=%s retryable=%s elapsed_ms=%s",
+                stage,
+                error.code,
+                error.retryable,
+                round((time.monotonic() - started) * 1000),
+            )
+        except Exception:
+            # SafeFormatter drops exception text and preserves code locations.
             row = self.database.get_job(job.id)
             self.database.status(job.id, "uncertain" if row["status"] == "sending" else "failed", "internal_error")
-            logger.error("job=%s unexpected type=%s", job.id, type(error).__name__)
+            logger.exception("download_failed stage=%s code=internal_error", stage)
             await self._notify(job, T.SERVICES_JOBS_INTERNAL_ERROR)
 
     async def _notify(self, job: Job, message: str, *, retry: bool = False) -> None:

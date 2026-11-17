@@ -120,3 +120,28 @@ GHCR: https://docs.github.com/en/packages/working-with-a-github-packages-registr
 повторить: `docker compose -p threaddock exec -T bot python scripts/check_web.py`.
 Успешная проверка контейнера без доступного HTTPS больше не считается успешной
 публикацией веб-интерфейса.
+
+## Логи
+
+Журнал приложения находится в постоянном томе: `/app/data/logs/app.log` внутри
+контейнера, обычно `/var/lib/docker/volumes/threaddock_threaddock-data/_data/logs/app.log`
+на хосте. Точный корень тома показывает
+`docker volume inspect threaddock_threaddock-data --format '{{ .Mountpoint }}'`.
+Ротация: текущий файл и четыре предыдущих по 10 МБ. Лог переживает замену контейнера.
+
+Быстрый просмотр с VPS:
+
+```sh
+docker logs -f --tail 100 threaddock-bot-1
+```
+
+Docker отдельно собирает stdout/stderr: три файла по 10 МБ на контейнер.
+Его физический путь можно узнать:
+`docker inspect --format '{{.LogPath}}' threaddock-bot-1`.
+
+Для загрузок пишутся номер задачи, chat/message ID, формат, попытка,
+короткий ключ медиа, попадание в кеш, стадия, время и код ошибки.
+Для архива — номер и вид задания; для пропущенных вложений — причина existing_media.
+Непредвиденная ошибка сохраняет тип и цепочку файл:строка:функция без текста
+исключения. Содержимое сообщений, URL с подписями, токены, cookie и локальные
+переменные в журнал не попадают.
