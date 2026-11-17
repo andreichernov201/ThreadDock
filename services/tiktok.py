@@ -140,8 +140,12 @@ def parse_video_page(html: str, expected_id: str | None = None) -> tuple[str, tu
                     if isinstance(variants, list):
                         variants = [v for v in variants if isinstance(v, dict)]
                         for variant in sorted(variants, key=lambda v: int(v.get("Bitrate") or 0), reverse=True):
-                            if "dash" not in str(variant.get("Format", "")).lower():
-                                urls.extend(_urls(variant.get("PlayAddr")))
+                            address = variant.get("PlayAddr") or {}
+                            key = str(address.get("UrlKey", "")) if isinstance(address, dict) else ""
+                            if "dash" not in str(variant.get("Format", "")).lower() and "bytevc2" not in key:
+                                # TikTok's VVC variants are not decodable by standard
+                                # FFmpeg; hvc1-only endpoints can omit original audio.
+                                urls.extend(url for url in _urls(address) if "/media-video-hvc1/" not in url)
                     urls.extend(_urls(video.get("playAddr")))
                     urls.extend(_urls(video.get("PlayAddrStruct")))
                     if urls:
@@ -196,8 +200,17 @@ class TikTokPhotos:
                 return None
             title, urls = video
             source = directory / "tiktok-source.mp4"
-            await self._download_candidates(urls, source, self.settings.max_download_bytes)
-            asset, has_audio = await self.media.compatible_video(source, directory)
+            last_error = None
+            for url in urls[:5]:
+                try:
+                    await self._download_candidates((url,), source, self.settings.max_download_bytes)
+                    asset, has_audio = await self.media.compatible_video(source, directory)
+                    break
+                except MediaError as error:
+                    last_error = error
+                    logger.info("tiktok_video_candidate_failed code=%s", error.code)
+            else:
+                raise last_error or MediaError(T.SERVICES_YTDLP_DOWNLOAD_FAILED, code="no_video")
             try:
                 async with asyncio.timeout(min(30, self.settings.process_timeout)):
                     audio = await self.media.extract_audio(source, directory)
