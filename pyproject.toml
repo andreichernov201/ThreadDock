@@ -19,7 +19,7 @@ Repository = "https://github.com/andreichernov201/ThreadDock"
 Issues = "https://github.com/andreichernov201/ThreadDock/issues"
 
 [dependency-groups]
-dev = ["ruff==0.16.7"]
+dev = ["ruff==0.17.5"]
 
 [tool.ruff]
 line-length = 120
