@@ -1,6 +1,7 @@
 """TikTok public media, with optional discovery of Live Photo motion clips."""
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -19,6 +20,11 @@ from services.processes import directory_size
 from services.tiktok_live import public_live_photos
 
 logger = logging.getLogger(__name__)
+
+
+def _content_digest(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()[:16]
 
 
 class PhotoModeError(MediaError):
@@ -284,7 +290,8 @@ class TikTokPhotos:
                 try:
                     await self._download_candidates(urls, source, self.settings.max_download_bytes)
                     motion, _ = await self.media.compatible_video(source, directory)
-                    target = directory / f"motion-{index:03}.mp4"
+                    digest = await asyncio.to_thread(_content_digest, motion.path(directory))
+                    target = directory / f"motion-{index:03}-{digest}.mp4"
                     motion.path(directory).replace(target)
                     native = motion.duration <= 10 and target.stat().st_size <= 10_000_000
                     asset = Asset(
@@ -307,6 +314,12 @@ class TikTokPhotos:
                     video, has_audio = await self.media.slideshow(images, music, directory, motion=motion_paths)
                 else:
                     video, has_audio = await self.media.slideshow(images, music, directory)
+                # file_id is keyed by asset name. A recovered moving slideshow
+                # must never reuse a previous degraded/static upload's file_id.
+                digest = await asyncio.to_thread(_content_digest, video.path(directory))
+                target = directory / f"slideshow-{digest}.mp4"
+                video.path(directory).replace(target)
+                video = replace(video, filename=target.name)
             except (MediaError, TimeoutError) as error:
                 logger.info("optional_slideshow code=%s", getattr(error, "code", "timeout"))
         return MediaBundle(

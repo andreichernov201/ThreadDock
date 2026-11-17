@@ -125,12 +125,16 @@ class MotionBundleTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
             (directory / "video.mp4").write_bytes(b"clip")
             return Asset("video.mp4", "video", 3.4, 320, 240), True
 
+        async def slideshow(images, audio, directory, **kwargs):
+            (directory / "slideshow.mp4").write_bytes(b"moving" if kwargs.get("motion") else b"static")
+            return Asset("slideshow.mp4", "video", 6), True
+
         media = SimpleNamespace(
             probe=AsyncMock(return_value=SimpleNamespace(video_codec="mjpeg", width=320, height=240)),
             photo=AsyncMock(side_effect=lambda path, root: Asset(path.name, "photo")),
             compatible_video=AsyncMock(side_effect=compatible),
             extract_audio=AsyncMock(return_value=Asset("audio.m4a", "audio", 16)),
-            slideshow=AsyncMock(return_value=(Asset("slideshow.mp4", "video", 6), True)),
+            slideshow=AsyncMock(side_effect=slideshow),
         )
         photos = TikTokPhotos(self.settings, None, media)
         photos._download_candidates = AsyncMock(side_effect=download)
@@ -155,6 +159,7 @@ class MotionBundleTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         degraded = await photos._render_post(normalize_url("https://www.tiktok.com/@user/photo/123"), fallback, post)
         self.assertEqual([a.kind for a in degraded.originals], ["photo", "photo"])
         self.assertTrue(degraded.motion_pending)
+        self.assertNotEqual(result.video.filename, degraded.video.filename)
 
     async def test_private_or_disabled_lookup_never_contacts_resolver(self):
         from services.links import normalize_url
