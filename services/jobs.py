@@ -102,7 +102,7 @@ class JobQueue:
             raise
         except TelegramRetryAfter as error:
             self.database.status(job.id, "queued", "telegram_rate_limit", delay=error.retry_after + 1)
-        except TelegramNetworkError, TelegramServerError:
+        except (TelegramNetworkError, TelegramServerError):
             self.database.status(job.id, "uncertain", "delivery_uncertain")
             logger.warning("download_uncertain stage=%s reason=telegram_network", stage)
             await self._notify(job, T.SERVICES_JOBS_SEND_UNCERTAIN)

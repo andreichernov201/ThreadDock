@@ -4,6 +4,8 @@ yt-dlp и HTTP-адаптеры получают этот прокси. HTTP, в
 порты закрыты. FFmpeg читает только локальные файлы с ограничением протоколов.
 """
 
+from __future__ import annotations
+
 import asyncio
 import base64
 import hmac
@@ -127,7 +129,7 @@ class SafeProxy:
             done, _ = await asyncio.wait(pumps, return_when=asyncio.FIRST_COMPLETED)
             for finished in done:
                 finished.result()
-        except ValueError, OSError, TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError:
+        except (ValueError, OSError, TimeoutError, asyncio.IncompleteReadError, asyncio.LimitOverrunError):
             if not tunnel_started:
                 writer.write(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
                 try:

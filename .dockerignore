@@ -17,3 +17,8 @@ cookies*.txt
 secrets
 .ruff_cache
 .pytest_cache
+.deploy-work
+.devcontainer
+node_modules
+test-results
+playwright-report

@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -43,4 +44,6 @@ class WebBootstrapTests(unittest.TestCase):
             self.assertEqual(path.read_text().count("ARCHIVE_PUBLIC_URL="), 1)
             self.assertTrue((path.parent / "web.enabled").exists())
             self.assertEqual((path.parent / "web-origin").read_text().strip(), values["ARCHIVE_PUBLIC_URL"])
-            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            # Windows chmod controls the read-only bit, not POSIX permission bits.
+            if os.name != "nt":
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)

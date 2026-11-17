@@ -10,3 +10,10 @@ secrets/
 cookies*.txt
 .ruff_cache/
 .pytest_cache/
+.codex/
+.deploy-work/
+.vscode/
+node_modules/
+test-results/
+playwright-report/
+*.log

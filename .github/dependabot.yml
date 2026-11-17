@@ -1,5 +1,18 @@
 version: 2
 updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      python:
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -7,6 +20,11 @@ updates:
     open-pull-requests-limit: 5
   - package-ecosystem: docker
     directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: docker
+    directory: /.devcontainer
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

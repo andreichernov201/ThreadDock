@@ -269,7 +269,7 @@ class ArchiveService:
             raise
         except TelegramRetryAfter as error:
             self.repository.task_status(identifier, "pending", code="rate_limit", delay=error.retry_after + 1)
-        except TelegramNetworkError, TelegramServerError, TimeoutError:
+        except (TelegramNetworkError, TelegramServerError, TimeoutError):
             current = self.repository.task(owner_id, identifier)
             status = "uncertain" if current and current["status"] in {"sending", "uncertain"} else "pending"
             if status == "pending" and task["attempts"] >= 3:
@@ -388,7 +388,7 @@ class ArchiveService:
             for job_id in batch_ids:
                 self.repository.task_status(job_id, "pending", code="rate_limit", delay=error.retry_after + 1)
             raise
-        except TelegramNetworkError, TelegramServerError, TimeoutError, asyncio.CancelledError:
+        except (TelegramNetworkError, TelegramServerError, TimeoutError, asyncio.CancelledError):
             for job_id in batch_ids:
                 self.repository.task_status(job_id, "uncertain", code="notification_uncertain")
             raise
@@ -439,7 +439,7 @@ class ArchiveService:
                                 media["id"],
                             ),
                         )
-                except TelegramBadRequest, TelegramForbiddenError, MediaError, OSError:
+                except (TelegramBadRequest, TelegramForbiddenError, MediaError, OSError):
                     partial.unlink(missing_ok=True)
                     with self.repository.db:
                         self.repository.db.execute(

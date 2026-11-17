@@ -29,8 +29,9 @@ def check_public_app(origin: str) -> None:
     try:
         read("/api/session")
     except HTTPError as error:
-        if error.code != 401:
-            raise ValueError("Archive authentication check failed") from error
+        with error:
+            if error.code != 401:
+                raise ValueError("Archive authentication check failed") from error
     else:
         raise ValueError("Archive API is accessible without authentication")
 

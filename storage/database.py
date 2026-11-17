@@ -302,7 +302,7 @@ class Database:
             self.connection.execute("UPDATE cache SET accessed_at=? WHERE key=?", (time.time(), key))
         try:
             return MediaBundle.deserialize(row[0], self.data_root)
-        except ValueError, KeyError, TypeError:
+        except (ValueError, KeyError, TypeError):
             self.delete_cache(key)
             return None
 
@@ -332,7 +332,7 @@ class Database:
             return None
         try:
             bundle = MediaBundle.deserialize(row[0], self.data_root)
-        except ValueError, KeyError, TypeError:
+        except (ValueError, KeyError, TypeError):
             return None
         items = bundle.items(mode)
         if not items or not all(self.file_id(bot_id, key, asset.filename, asset.kind) for asset in items):

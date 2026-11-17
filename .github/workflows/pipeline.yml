@@ -10,12 +10,41 @@ permissions:
   contents: read
 
 jobs:
+  compatibility:
+    name: Python ${{ matrix.python }} / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.12", "3.13", "3.14", "3.15"]
+        include:
+          - os: windows-latest
+            python: "3.14"
+          - os: macos-latest
+            python: "3.14"
+    concurrency:
+      group: compatibility-${{ matrix.os }}-${{ matrix.python }}-${{ github.ref }}
+      cancel-in-progress: true
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          python-version: ${{ matrix.python }}
+          version: "0.11.23"
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run --locked python scripts/check.py
   test:
+    name: Media and web integration
     concurrency:
       group: test-${{ github.ref }}
       cancel-in-progress: true
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -24,21 +53,19 @@ jobs:
         with:
           python-version: "3.14"
           version: "0.11.23"
+          enable-cache: true
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
         with:
           deno-version: "v2.9.7"
-      - run: uv sync --locked
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          cache: npm
+      - run: uv sync --locked --extra media
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      - run: uv run python -m unittest discover -s tests -v
-      - run: uvx --from ruff==0.16.7 ruff check .
-      - run: uvx --from ruff==0.16.7 ruff format --check --diff .
-      - run: deno fmt --check --no-config archive/web tests/web_test.js
-      - run: deno test --no-config --allow-read=archive/web tests/web_test.js
-      - name: Check mobile archive layout
-        run: |
-          npm install --no-save --package-lock=false --prefix "$RUNNER_TEMP/ui-tools" playwright@1.65.1
-          node "$RUNNER_TEMP/ui-tools/node_modules/playwright/cli.js" install --with-deps chromium
-          NODE_PATH="$RUNNER_TEMP/ui-tools/node_modules" node tests/ui_smoke.cjs
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: uv run --locked --extra media python scripts/check.py --full
       - name: Save archive screenshots
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -103,7 +130,7 @@ jobs:
           [[ "$reference" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]
           printf 'reference=%s\n' "$reference" >> "$GITHUB_OUTPUT"
   deploy:
-    needs: [test, image]
+    needs: [compatibility, test, image]
     if: >-
       github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
       vars.DEPLOY_ENABLED == 'true'
