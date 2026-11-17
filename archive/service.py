@@ -177,6 +177,11 @@ class ArchiveService:
         )
 
     def start(self) -> None:
+        removed = self.repository.stage_untriggered_media()
+        for relative_path in removed:
+            self.safe_path(relative_path, self.blobs).unlink(missing_ok=True)
+        cancelled = self.repository.retire_caption_downloads()
+        logger.info("archive_policy retired_blobs=%s cancelled_caption_jobs=%s", len(removed), cancelled)
         self.repository.recover()
         self.task = asyncio.create_task(self._worker(), name="archive-outbox")
 
@@ -209,6 +214,8 @@ class ArchiveService:
 
     async def _process(self, task: dict):
         identifier, owner_id = task["id"], task["owner_id"]
+        started = time.monotonic()
+        logger.info("archive_task=%s kind=%s attempt=%s state=started", identifier, task["kind"], task["attempts"])
         try:
             owner = self.repository.owner(owner_id)
             if owner is None:
@@ -245,6 +252,10 @@ class ArchiveService:
                 else:
                     raise ValueError("Unknown archive task")
             self.repository.task_status(identifier, "done", result=result)
+            logger.info(
+                "archive_task=%s kind=%s state=done elapsed_ms=%s",
+                identifier, task["kind"], round((time.monotonic() - started) * 1000),
+            )
         except asyncio.CancelledError:
             current = self.repository.task(owner_id, identifier)
             if current:
@@ -266,7 +277,7 @@ class ArchiveService:
             code = error.code if isinstance(error, MediaError) else type(error).__name__
             self.repository.task_status(identifier, "failed", code=code)
             self.repository.record_error(code)
-            logger.warning("archive_task=%s code=%s", identifier, code)
+            logger.exception("archive_task=%s kind=%s code=%s", identifier, task["kind"], code)
 
     async def _notify(self, task: dict, owner: dict):
         if not owner["notify_enabled"] or owner["paused"]:

@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from aiogram.types import BusinessBotRights, BusinessConnection, Chat, Message, User
+from aiogram.types import BusinessBotRights, BusinessConnection, Chat, Message, MessageEntity, User, Video
 
 from handlers.callbacks import media_action
 from handlers.links import handle_links
@@ -37,6 +37,30 @@ class HandlerTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         await handle_links(incoming("Привет"), self.app)
         self.assertIsNone(self.database.claim())
         self.bot.send_message.assert_not_awaited()
+
+    async def test_video_with_hidden_source_link_does_not_download_again(self):
+        message = incoming().model_copy(update={
+            "text": None, "caption": "Already downloaded video",
+            "video": Video(file_id="video", file_unique_id="unique", width=320, height=240, duration=1),
+            "caption_entities": [MessageEntity(type="text_link", offset=0, length=7, url="https://youtu.be/abc")],
+        })
+        await handle_links(message, self.app)
+        self.assertIsNone(self.database.claim())
+        self.bot.send_message.assert_not_awaited()
+
+    async def test_ready_attachments_ignore_links_in_captions(self):
+        for field in ("photo", "video", "animation", "document", "audio", "voice", "video_note", "sticker", "paid_media"):
+            with self.subTest(field=field):
+                await handle_links(incoming().model_copy(update={field: True}), self.app)
+                self.assertIsNone(self.database.claim())
+
+    async def test_business_media_opens_reply_window_without_download(self):
+        self.database.save_connection("conn", 99, True, True)
+        await handle_links(incoming(business="conn").model_copy(update={"video": True}), self.app)
+        self.assertTrue(self.database.business_can_send("conn", 10))
+        self.assertIsNone(self.database.claim())
+        await handle_links(incoming(sender=99, business="conn"), self.app)
+        self.assertIsNotNone(self.database.claim())
 
     async def test_group_disabled_by_default(self):
         await handle_links(incoming(chat_id=-123), self.app)

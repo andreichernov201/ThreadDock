@@ -25,6 +25,10 @@ BOOLEAN_SETTINGS = {
     "auto_delete_disconnected",
 }
 MEDIA_TYPES = {"photo", "video", "document", "audio", "voice", "video_note", "animation", "sticker"}
+# Snapshots support change detection and statistics; only events retain media.
+RETAINED_MESSAGE = """EXISTS (SELECT 1 FROM archive_events retained
+ WHERE retained.message_id=m.id AND retained.owner_id=m.owner_id
+ AND retained.kind IN ('edited','deleted','unknown_deleted','reply_media'))"""
 
 
 def _dict(row):
@@ -244,6 +248,8 @@ class ArchiveRepository:
             **payload,
             "media": [{key: value for key, value in item.items() if key != "file_id"} for item in payload["media"]],
         }
+        if not semantic.get("ephemeral"):
+            semantic.pop("ephemeral", None)
         digest = hashlib.sha256(json.dumps(semantic, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         now = time.time()
         with self.db:
@@ -309,7 +315,9 @@ class ArchiveRepository:
                 "INSERT INTO archive_search(rowid,owner_id,message_id,body) VALUES (?,?,?,?)",
                 (version_id, owner_id, message_id, searchable),
             )
-            is_edit = old is not None and bool(old["current_hash"]) and old["current_hash"] != digest
+            is_edit = (
+                old is not None and bool(old["current_hash"]) and old["current_hash"] != digest
+            ) or (old is None and changed_at > sent_at)
             if old is None or changed_at >= (old["edited_at"] or old["sent_at"]):
                 self.db.execute(
                     "UPDATE archive_messages SET body=?,current_hash=?,edited_at=?,reply_to=? WHERE id=?",
@@ -324,7 +332,7 @@ class ArchiveRepository:
                 f"version:{version_id}",
                 version=version_id,
             )
-            if old is None and captured_from_reply and payload["media"]:
+            if payload["media"] and (payload.get("ephemeral") or payload["protected"]):
                 self._event(
                     owner_id,
                     chat["id"],
@@ -337,7 +345,7 @@ class ArchiveRepository:
             for item in payload["media"]:
                 identifier = uuid.uuid4().hex
                 cursor = self.db.execute(
-                    "INSERT OR IGNORE INTO archive_media(id,owner_id,message_id,file_id,unique_id,kind,filename,mime_type,size,protected,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT OR IGNORE INTO archive_media(id,owner_id,message_id,file_id,unique_id,kind,filename,mime_type,size,protected,created_at,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,'staged')",
                     (
                         identifier,
                         owner_id,
@@ -352,8 +360,7 @@ class ArchiveRepository:
                         now,
                     ),
                 )
-                if cursor.rowcount and item["kind"] in owner["media_types"]:
-                    self._enqueue(owner_id, "media", {"media_id": identifier}, f"media:{identifier}")
+            self._activate_media(owner_id, message_id, owner["media_types"])
             if is_edit:
                 self._enqueue(owner_id, "sync_copies", {"message_id": message_id}, f"sync:{version_id}")
             if not outgoing:
@@ -411,10 +418,58 @@ class ArchiveRepository:
                     message_id, kind = row["id"], "deleted"
                     self.db.execute("UPDATE archive_messages SET deleted_at=? WHERE id=?", (now, message_id))
                 self._event(owner_id, chat["id"], message_id, kind, now, f"deleted:{message_id}")
+                self._activate_media(owner_id, message_id, owner["media_types"])
                 self._enqueue(owner_id, "sync_copies", {"message_id": message_id}, f"deleted_copy:{message_id}")
                 count += 1
             self.db.execute("UPDATE archive_chats SET last_at=max(last_at,?) WHERE id=?", (now, chat["id"]))
         return count
+
+    def retained(self, owner_id: int, message_id: int) -> bool:
+        return self.db.execute(
+            f"SELECT 1 FROM archive_messages m WHERE m.owner_id=? AND m.id=? AND {RETAINED_MESSAGE}",
+            (owner_id, message_id),
+        ).fetchone() is not None
+
+    def _activate_media(self, owner_id: int, message_id: int, media_types: list[str]) -> None:
+        if not self.retained(owner_id, message_id):
+            return
+        rows = self.db.execute(
+            "SELECT id,kind FROM archive_media WHERE owner_id=? AND message_id=? AND status='staged'",
+            (owner_id, message_id),
+        ).fetchall()
+        for row in rows:
+            if row["kind"] in media_types:
+                self.db.execute("UPDATE archive_media SET status='pending' WHERE id=?", (row["id"],))
+                self._enqueue(owner_id, "media", {"media_id": row["id"]}, f"media:{row['id']}")
+
+    def stage_untriggered_media(self) -> list[str]:
+        """Retire old downloads, preserving Telegram references for later deletions."""
+        with self.db:
+            rows = self.db.execute(
+                f"SELECT a.id,a.local_path FROM archive_media a JOIN archive_messages m ON m.id=a.message_id WHERE NOT ({RETAINED_MESSAGE}) AND a.status!='staged'"
+            ).fetchall()
+            self.db.executemany(
+                "UPDATE archive_media SET status='staged',local_path=NULL WHERE id=?",
+                [(row["id"],) for row in rows],
+            )
+            self.db.execute(
+                """UPDATE archive_tasks SET status='done',error_code='no_archive_event'
+                WHERE kind='media' AND status IN ('pending','running') AND json_extract(payload,'$.media_id') IN (
+                  SELECT id FROM archive_media WHERE status='staged')"""
+            )
+        return [row["local_path"] for row in rows if row["local_path"]]
+
+    def retire_caption_downloads(self) -> int:
+        with self.db:
+            return self.db.execute(
+                """UPDATE jobs SET status='cancelled',retryable=0,error_code='existing_media'
+                WHERE request_key LIKE 'message:%' AND status IN ('queued','running','failed')
+                AND EXISTS (
+                  SELECT 1 FROM archive_messages m JOIN archive_chats c ON c.id=m.chat_id
+                  JOIN archive_media a ON a.message_id=m.id
+                  WHERE c.connection_id=jobs.business_id AND c.telegram_id=jobs.chat_id
+                  AND m.telegram_id=jobs.message_id)"""
+            ).rowcount
 
     def message(self, owner_id: int, identifier: int) -> dict | None:
         row = _dict(
@@ -447,7 +502,7 @@ class ArchiveRepository:
         if not self.chat(owner_id, chat_id):
             raise LookupError("Chat not found")
         conditions = {
-            "all": "1",
+            "all": RETAINED_MESSAGE,
             "deleted": "deleted_at IS NOT NULL",
             "edited": "edited_at IS NOT NULL",
             "favorites": "favorite=1",
@@ -455,7 +510,7 @@ class ArchiveRepository:
         if mode not in conditions:
             raise ValueError(T.ARCHIVE_REPOSITORY_UNKNOWN_MESSAGE_FILTER)
         rows = self.db.execute(
-            f"SELECT * FROM archive_messages WHERE owner_id=? AND chat_id=? AND {conditions[mode]} AND (?=0 OR id<?) ORDER BY id DESC LIMIT ?",
+            f"SELECT m.* FROM archive_messages m WHERE owner_id=? AND chat_id=? AND {conditions[mode]} AND (?=0 OR id<?) ORDER BY id DESC LIMIT ?",
             (owner_id, chat_id, cursor, cursor, limit + 1),
         ).fetchall()
         selected = [dict(row) for row in rows[:limit]]
@@ -471,7 +526,7 @@ class ArchiveRepository:
         elif kind == "all":
             where += " AND e.kind!='new'"
         elif kind != "all":
-            if kind not in {"new", "edited", "deleted", "keyword", "profile", "reply_media"}:
+            if kind not in {"edited", "deleted", "keyword", "profile", "reply_media"}:
                 raise ValueError(T.ARCHIVE_REPOSITORY_UNKNOWN_EVENT_FILTER)
             where += " AND e.kind IN ('deleted','unknown_deleted')" if kind == "deleted" else " AND e.kind=?"
             if kind != "deleted":
@@ -481,7 +536,15 @@ class ArchiveRepository:
             (*values, limit + 1),
         ).fetchall()
         items = [{**dict(row), "payload": json.loads(row["payload"])} for row in rows[:limit]]
-        return {"items": items, "next_cursor": items[-1]["id"] if len(rows) > limit else None}
+        counts = {
+            row["kind"]: row["total"]
+            for row in self.db.execute(
+                "SELECT kind,count(*) AS total FROM archive_events WHERE owner_id=? AND (?=0 OR chat_id=?) AND kind!='new' GROUP BY kind",
+                (owner_id, chat_id, chat_id),
+            )
+        }
+        counts["deleted"] = counts.get("deleted", 0) + counts.pop("unknown_deleted", 0)
+        return {"items": items, "next_cursor": items[-1]["id"] if len(rows) > limit else None, "counts": counts}
 
     def search(
         self,
@@ -492,7 +555,7 @@ class ArchiveRepository:
         cursor: int = 0,
         limit: int = 50,
         mode: str = "all",
-        events_only: bool = False,
+        events_only: bool = True,
     ) -> dict:
         words = re.findall(r"\w+", query[:200], re.UNICODE)[:12]
         if not words:
@@ -539,7 +602,7 @@ class ArchiveRepository:
     def media(self, owner_id: int, identifier: str) -> dict | None:
         return _dict(
             self.db.execute(
-                "SELECT a.*,m.chat_id,c.topic_id,c.telegram_id AS source_chat_id,c.title AS chat_title,c.connection_id FROM archive_media a JOIN archive_messages m ON m.id=a.message_id JOIN archive_chats c ON c.id=m.chat_id WHERE a.owner_id=? AND a.id=?",
+                f"SELECT a.*,m.chat_id,c.topic_id,c.telegram_id AS source_chat_id,c.title AS chat_title,c.connection_id FROM archive_media a JOIN archive_messages m ON m.id=a.message_id JOIN archive_chats c ON c.id=m.chat_id WHERE a.owner_id=? AND a.id=? AND a.status!='staged' AND {RETAINED_MESSAGE}",
                 (owner_id, identifier),
             ).fetchone()
         )
@@ -549,7 +612,7 @@ class ArchiveRepository:
         return [
             dict(row)
             for row in self.db.execute(
-                "SELECT id,kind,filename,mime_type,size,status,protected,vault_message_id FROM archive_media WHERE owner_id=? AND message_id=? ORDER BY created_at,id",
+                f"SELECT a.id,a.kind,a.filename,a.mime_type,a.size,a.status,a.protected,a.vault_message_id FROM archive_media a JOIN archive_messages m ON m.id=a.message_id WHERE a.owner_id=? AND a.message_id=? AND a.status!='staged' AND {RETAINED_MESSAGE} ORDER BY a.created_at,a.id",
                 (owner_id, identifier),
             )
         ]
@@ -557,7 +620,7 @@ class ArchiveRepository:
     def gallery(self, owner_id: int, *, chat_id: int = 0, cursor: int = 0, limit: int = 40) -> dict:
         # A timestamp alone loses media when an album has identical creation times.
         rows = self.db.execute(
-            "SELECT a.rowid AS position,a.id,a.kind,a.filename,a.mime_type,a.size,a.status,a.protected,a.created_at,a.message_id,m.chat_id,c.title AS chat_title FROM archive_media a JOIN archive_messages m ON m.id=a.message_id JOIN archive_chats c ON c.id=m.chat_id WHERE a.owner_id=? AND (?=0 OR m.chat_id=?) AND (?=0 OR a.rowid<?) ORDER BY a.rowid DESC LIMIT ?",
+            f"SELECT a.rowid AS position,a.id,a.kind,a.filename,a.mime_type,a.size,a.status,a.protected,a.created_at,a.message_id,m.chat_id,c.title AS chat_title FROM archive_media a JOIN archive_messages m ON m.id=a.message_id JOIN archive_chats c ON c.id=m.chat_id WHERE a.owner_id=? AND a.status!='staged' AND {RETAINED_MESSAGE} AND (?=0 OR m.chat_id=?) AND (?=0 OR a.rowid<?) ORDER BY a.rowid DESC LIMIT ?",
             (owner_id, chat_id, chat_id, cursor, cursor, limit + 1),
         ).fetchall()
         items = [dict(row) for row in rows[:limit]]

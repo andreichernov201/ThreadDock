@@ -8,6 +8,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+from archive.repository import RETAINED_MESSAGE
 from core import texts as T
 
 FORMATS = {"json", "csv", "md", "html"}
@@ -64,7 +65,7 @@ async def write_export(
         raise LookupError("Chat not found")
     directory.mkdir(parents=True, exist_ok=True)
     messages = repository.db.execute(
-        "SELECT * FROM archive_messages WHERE owner_id=? AND (?=0 OR chat_id=?) ORDER BY chat_id,sent_at,id",
+        f"SELECT m.* FROM archive_messages m WHERE owner_id=? AND {RETAINED_MESSAGE} AND (?=0 OR chat_id=?) ORDER BY chat_id,sent_at,id",
         (owner_id, chat_id, chat_id),
     )
     files, file, size, first, part = [], None, 0, True, 0

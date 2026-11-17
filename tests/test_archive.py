@@ -44,9 +44,9 @@ class ArchiveFixture(DatabaseFixture):
             self.repo.update_owner(owner, {"enabled": True})
             self.repo.save_connection(f"connection-{owner}", owner, True, {"can_reply": True})
 
-    def ingest(self, owner=10, telegram_id=1, body="Original text", at=None, changed=None, media=None, **kwargs):
+    def ingest(self, owner=10, telegram_id=1, body="Original text", at=None, changed=None, media=None, archived=False, **kwargs):
         at = time.time() - 100 if at is None else at
-        return self.repo.ingest(
+        identifier = self.repo.ingest(
             owner_id=owner,
             connection_id=f"connection-{owner}",
             source_chat_id=30,
@@ -61,6 +61,10 @@ class ArchiveFixture(DatabaseFixture):
             payload={"body": body, "media": media or [], "protected": kwargs.pop("protected", False), "reply_to": None},
             **kwargs,
         )
+
+        if archived:
+            self.repo.delete_messages(owner, f"connection-{owner}", 30, [telegram_id], "Test chat")
+        return identifier
 
     @staticmethod
     def photo(identifier="photo-1", **values):
@@ -101,7 +105,7 @@ class ArchivePolicyTests(ArchiveFixture, unittest.TestCase):
         self.assertEqual({item["kind"] for item in events}, {"edited"})
 
     def test_reply_media_capture_has_an_event(self):
-        self.ingest(media=[self.photo()], captured_from_reply=True)
+        self.ingest(media=[self.photo()], captured_from_reply=True, protected=True)
         events = self.repo.events(10)["items"]
         self.assertEqual([item["kind"] for item in events], ["reply_media"])
 
@@ -112,6 +116,55 @@ class ArchivePolicyTests(ArchiveFixture, unittest.TestCase):
         result = self.repo.search(10, "word", events_only=True)
         self.assertEqual([item["body"] for item in result["items"]], ["deleted word"])
         self.assertEqual(self.repo.search(10, "word", events_only=True, mode="edited")["items"], [])
+
+
+class EventMediaPolicyTests(ArchiveFixture, unittest.TestCase):
+    def test_ordinary_replied_media_has_no_archive_task(self):
+        identifier = self.ingest(media=[self.photo()], captured_from_reply=True)
+        self.assertEqual(self.repo.message(10, identifier)["media"], [])
+        self.assertEqual(self.repo.gallery(10)["items"], [])
+        self.assertEqual(self.repo.events(10)["items"], [])
+        self.assertIsNone(self.repo.claim())
+
+    def test_deletion_promotes_a_file_only_once(self):
+        identifier = self.ingest(media=[self.photo()])
+        self.repo.delete_messages(10, "connection-10", 30, [1], "Test chat")
+        self.repo.delete_messages(10, "connection-10", 30, [1], "Test chat")
+        self.assertTrue(self.repo.retained(10, identifier))
+        self.assertEqual(len(self.repo.gallery(10)["items"]), 1)
+        self.assertEqual(self.repo.db.execute("SELECT count(*) FROM archive_tasks WHERE kind='media'").fetchone()[0], 1)
+
+    def test_edit_retains_original_and_replacement(self):
+        at = time.time() - 100
+        identifier = self.ingest(at=at, media=[self.photo("original")])
+        self.ingest(at=at, changed=at + 1, media=[self.photo("replacement")])
+        self.assertEqual(len(self.repo.message(10, identifier)["media"]), 2)
+
+    def test_keyword_does_not_copy_ordinary_media(self):
+        self.repo.update_owner(10, {"keywords": ["meeting"]})
+        identifier = self.ingest(body="meeting", media=[self.photo()])
+        self.assertEqual(self.repo.message(10, identifier)["media"], [])
+        self.assertEqual(self.repo.db.execute("SELECT count(*) FROM archive_tasks WHERE kind='media'").fetchone()[0], 0)
+
+    def test_legacy_copy_is_retired_while_deleted_file_remains(self):
+        identifier = self.ingest(media=[self.photo()])
+        self.ingest(telegram_id=2, media=[self.photo("deleted")], archived=True)
+        with self.repo.db:
+            self.repo.db.execute(
+                "UPDATE archive_media SET status='ready',local_path='blobs/10/old' WHERE message_id=?", (identifier,)
+            )
+        self.assertEqual(self.repo.stage_untriggered_media(), ["blobs/10/old"])
+        self.assertEqual(len(self.repo.gallery(10)["items"]), 1)
+
+    def test_first_seen_edit_is_retained(self):
+        at = time.time() - 100
+        identifier = self.ingest(at=at, changed=at + 1, media=[self.photo()])
+        self.assertTrue(self.repo.retained(10, identifier))
+
+    def test_ordinary_snapshots_are_absent_from_message_listing(self):
+        identifier = self.ingest(media=[self.photo()])
+        chat_id = self.repo.message(10, identifier)["chat_id"]
+        self.assertEqual(self.repo.messages(10, chat_id)["items"], [])
 
 
 class AuthTests(unittest.TestCase):
@@ -181,7 +234,7 @@ class RepositoryTests(ArchiveFixture, unittest.TestCase):
         self.assertEqual(kinds, {"deleted", "unknown_deleted"})
 
     def test_album_pagination_never_loses_equal_timestamps(self):
-        self.ingest(media=[self.photo(str(index)) for index in range(5)])
+        self.ingest(media=[self.photo(str(index)) for index in range(5)], archived=True)
         with self.repo.db:
             self.repo.db.execute("UPDATE archive_media SET created_at=100")
         found, cursor = [], 0
@@ -202,7 +255,7 @@ class RepositoryTests(ArchiveFixture, unittest.TestCase):
         self.assertIsNone(self.repo.session(token))
         self.assertFalse(self.repo.owner(10)["enabled"])
         self.assertEqual(self.repo.search(10, "findme")["items"], [])
-        self.assertEqual(len(self.repo.search(20, "findme")["items"]), 1)
+        self.assertEqual(len(self.repo.search(20, "findme", events_only=False)["items"]), 1)
         self.assertEqual(self.repo.db.execute("SELECT count(*) FROM archive_tasks WHERE owner_id=10").fetchone()[0], 0)
 
     def test_paused_and_excluded_are_not_ingested(self):
@@ -270,7 +323,7 @@ class WebTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 200)
 
     async def test_csrf_origin_and_foreign_object_denied(self):
-        foreign = self.ingest(owner=20, media=[self.photo()])
+        foreign = self.ingest(owner=20, media=[self.photo()], archived=True)
         media = self.repo.message(20, foreign)["media"][0]["id"]
         for path in (f"/api/messages/{foreign}", f"/api/media/{media}/file"):
             self.assertEqual((await self.request("GET", path)).status, 404)
@@ -314,7 +367,7 @@ class WebTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("pin_hash", json.loads(response.body)["owner"])
 
     async def test_delete_requires_confirmation_and_removes_local_file(self):
-        identifier = self.ingest(media=[self.photo()])
+        identifier = self.ingest(media=[self.photo()], archived=True)
         media = self.repo.message(10, identifier)["media"][0]["id"]
         path = self.service.blobs / "10" / media
         path.parent.mkdir(exist_ok=True)
@@ -333,7 +386,7 @@ class WebTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
 
 class ServiceTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
     async def test_exports_escape_html_csv_and_isolate_owners(self):
-        self.ingest(body="=SUM(1,2)<script>alert(1)</script>")
+        self.ingest(body="=SUM(1,2)<script>alert(1)</script>", archived=True)
         self.ingest(owner=20, body="FOREIGN")
         for format_name in ("json", "csv", "html", "md"):
             files = await write_export(self.repo, 10, self.root / format_name, format_name=format_name)
@@ -349,7 +402,7 @@ class ServiceTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
 
     async def test_split_exports_are_valid_independent_documents(self):
         for index in range(6):
-            self.ingest(telegram_id=index + 1, body="message" * 30)
+            self.ingest(telegram_id=index + 1, body="message" * 30, archived=True)
         files = await write_export(self.repo, 10, self.root / "parts", max_part_bytes=650)
         self.assertGreater(len(files), 1)
         self.assertEqual(sum(len(json.loads(p.read_text(encoding="utf-8"))["records"]) for p in files), 6)
@@ -404,7 +457,7 @@ class ServiceTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
         self.assertIn(f"message={message_id}", buttons[0][0].web_app.url)
 
     async def test_download_is_bounded_and_saved_without_public_url(self):
-        identifier = self.ingest(media=[self.photo()])
+        identifier = self.ingest(media=[self.photo()], archived=True)
         media = self.repo.message(10, identifier)["media"][0]["id"]
 
         async def download(*args, destination, **kwargs):
@@ -418,7 +471,7 @@ class ServiceTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("file_id", self.repo.message(10, identifier)["media"][0])
 
     async def test_no_disk_space_stops_download(self):
-        identifier = self.ingest(media=[self.photo()])
+        identifier = self.ingest(media=[self.photo()], archived=True)
         media = self.repo.message(10, identifier)["media"][0]["id"]
         with patch("archive.service.shutil.disk_usage", return_value=SimpleNamespace(free=0)):
             await self.service._save_media({"payload": {"media_id": media}}, self.repo.owner(10))

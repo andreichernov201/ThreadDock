@@ -6,6 +6,8 @@ from pathlib import PurePath
 
 from aiogram.types import Message
 
+from core.messages import is_disappearing
+
 
 def clean_filename(name: str, fallback: str) -> str:
     name = PurePath(name.replace("\\", "/")).name
@@ -60,6 +62,7 @@ def message_payload(message: Message) -> dict:
         "body": body,
         "media": media,
         "protected": bool(message.has_protected_content),
+        "ephemeral": is_disappearing(message),
         "reply_to": message.reply_to_message.message_id if message.reply_to_message else None,
     }
 

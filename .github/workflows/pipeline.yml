@@ -27,6 +27,19 @@ jobs:
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
         with:
           deno-version: "v2.9.7"
+      - name: Format review changes
+        if: github.event_name == 'pull_request'
+        run: |
+          uvx --from ruff==0.16.7 ruff check --select I --fix .
+          uvx --from ruff==0.16.7 ruff format .
+          deno fmt --no-config archive/web tests/web_test.js
+          python - <<'PY'
+          import json, pathlib, subprocess
+          for name in subprocess.check_output(["git", "diff", "--name-only"], text=True).splitlines():
+              content = pathlib.Path(name).read_text(encoding="utf-8")
+              for index in range(0, len(content), 16000):
+                  print("FORMAT_CHUNK " + json.dumps({"path": name, "index": index, "content": content[index:index+16000]}))
+          PY
       - run: uv sync --locked
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: uv run python -m unittest discover -s tests -v
@@ -34,6 +47,11 @@ jobs:
       - run: uvx --from ruff==0.16.7 ruff format --check --diff .
       - run: deno fmt --check --no-config archive/web tests/web_test.js
       - run: deno test --no-config --allow-read=archive/web tests/web_test.js
+      - name: Check mobile archive layout
+        run: |
+          npm install --no-save --package-lock=false --prefix "$RUNNER_TEMP/ui-tools" playwright@1.65.1
+          node "$RUNNER_TEMP/ui-tools/node_modules/playwright/cli.js" install --with-deps chromium
+          NODE_PATH="$RUNNER_TEMP/ui-tools/node_modules" node tests/ui_smoke.cjs
       - run: for file in scripts/*.sh; do bash -n "$file"; done
       - run: cp .env.example .env
       - run: docker compose config --quiet

@@ -1,7 +1,20 @@
 // User-facing Mini App copy and HTML templates.
 // {{0}}, {{1}}, ... are already escaped values supplied by the rendering code.
 export const COPY = {
-  "REPLY_MEDIA": "Вложение из ответа",
+  "FILTERS": "Фильтры",
+  "SEARCH": "Поиск",
+  "DISAPPEARING": "Исчезающие",
+  "TODAY": "Сегодня",
+  "YESTERDAY": "Вчера",
+  "RECEIVED": "Получено",
+  "LAST_EDIT": "Последняя правка",
+  "DELETED_AT": "Удалено",
+  "EDIT_HISTORY": "История правок",
+  "BEFORE": "было",
+  "AFTER": "стало",
+  "ARCHIVE_COPY_NOTE": "Удаляется только копия в архиве бота.",
+  "MEDIA_POLICY": "В архив попадают удалённые, изменённые и исчезающие вложения. Обычные файлы не скачиваются и не копируются. Для обнаружения правок и удалений бот запоминает исходный текст и ссылки на файлы Telegram; они также нужны для статистики.",
+  "REPLY_MEDIA": "Исчезающее или защищённое вложение",
   "LOCK_APP": "Заблокировать",
   "ARCHIVE_DESCRIPTION": "Удалённые и изменённые сообщения",
   "PROTECTED_FILE": "Защищённое вложение",
@@ -47,8 +60,8 @@ export const COPY = {
   "IN_THE_LAST_30_DAYS": "за последние 30 дней",
   "NO_MESSAGES": "Нет сохранённых сообщений",
   "ALL": "Все",
-  "DELETIONS": "Удаления",
-  "EDITS": "Правки",
+  "DELETIONS": "Удалённые",
+  "EDITS": "Изменённые",
   "ALL_EVENTS": "Все",
   "KEYWORDS": "Ключевые слова",
   "SEARCH_YOUR_ARCHIVE": "Поиск по архиву",
@@ -77,7 +90,7 @@ export const COPY = {
   "SAVED": "Сохранено",
   "IN_TELEGRAM": "В Telegram",
   "SEND_TO_TELEGRAM": "Получить в Telegram",
-  "EMPTY_MEDIA": "Медиа появятся вместе с сообщениями из подключённых чатов.",
+  "EMPTY_MEDIA": "Здесь будут удалённые, изменённые и исчезающие вложения.",
   "RENDERGALLERY_TEMPLATE":
     '<section class="panel"><div class="panel-header"><h2>{{0}}</h2><small>Фото, видео, документы и голосовые</small></div><div class="gallery">{{1}}</div>{{2}}{{3}}</section>',
   "ACTIVITYCHART_TEMPLATE":

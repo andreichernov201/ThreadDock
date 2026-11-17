@@ -1,5 +1,7 @@
 """Composition of use cases. Telegram handlers only validate context and submit jobs."""
 
+import logging
+
 from aiogram import Bot
 from aiogram.types import BusinessConnection, Message
 
@@ -13,6 +15,9 @@ from services.jobs import JobQueue
 from services.links import LinkError, extract_urls, normalize_url
 from services.pipeline import MediaPipeline
 from storage.database import Database
+
+
+logger = logging.getLogger(__name__)
 
 
 class Application:
@@ -85,4 +90,10 @@ class Application:
         if not self.accepting:
             return 0, [T.SERVICES_APPLICATION_RESTARTING]
         count = self.database.enqueue(requests, destination, "video", self.settings.queue_capacity) if requests else 0
+        if requests:
+            logger.info(
+                "download_submit chat=%s message=%s business=%s links=%s queued=%s suppressed=%s",
+                destination.chat_id, destination.message_id, bool(destination.business_id),
+                len(requests), count, len(requests) - count,
+            )
         return count, list(dict.fromkeys(errors))

@@ -1,10 +1,14 @@
+import logging
+
 from aiogram import F, Router
 from aiogram.types import Message
 
 from core.errors import MediaError
+from core.messages import has_media
 from services.application import Application
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 
 @router.message(F.text | F.caption)
@@ -12,6 +16,12 @@ router = Router()
 async def handle_links(message: Message, app: Application) -> None:
     destination = await app.destination(message)
     if destination is None:
+        return
+    if has_media(message):
+        logger.info(
+            "download_skip reason=existing_media chat=%s message=%s business=%s forwarded=%s",
+            message.chat.id, message.message_id, bool(destination.business_id), bool(message.forward_origin),
+        )
         return
     text = message.text or message.caption or ""
     if text.startswith("/"):
