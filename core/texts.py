@@ -220,7 +220,9 @@ SERVICES_TIKTOK_TOO_MANY_PHOTOS = "В публикации слишком мно
 SERVICES_TIKTOK_INVALID_IMAGE = "Источник вернул неподдерживаемое изображение."
 SERVICES_TIKTOK_PHOTO_POST_TOO_LARGE = "Фотопубликация превышает допустимый размер."
 SERVICES_TIKTOK_MUSIC_UNAVAILABLE = "Не удалось получить музыку фотопубликации."
-SERVICES_TIKTOK_PHOTO_METADATA_UNAVAILABLE = "Не удалось прочитать данные фотопубликации TikTok. Возможно, сайт изменил формат страницы или ограничил доступ."
+SERVICES_TIKTOK_PHOTO_METADATA_UNAVAILABLE = (
+    "Не удалось прочитать данные фотопубликации TikTok. Возможно, сайт изменил формат страницы или ограничил доступ."
+)
 SERVICES_YTDLP_RESTRICTED = "Публикация закрыта или имеет ограничения."
 SERVICES_YTDLP_UNAVAILABLE = "Публикация удалена или недоступна."
 SERVICES_YTDLP_SOURCE_UNAVAILABLE = "Источник временно недоступен."
