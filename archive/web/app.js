@@ -7,7 +7,7 @@ const demo = new URLSearchParams(location.search).get("demo") === "1";
 const icons = {
   filter: '<path d="M3 4h18l-7 8v7l-4-2v-5z"/>',
   feed:
-    '<rect x="4" y="3" width="16" height="18" rx="3"/><path d="M8 8h8M8 12h8M8 16h5"/>',
+    '<path d="M5 4h14l3 10v5a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-5z"/><path d="M2 14h6l2 3h4l2-3h6"/>',
   chats:
     '<path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8A8.5 8.5 0 0 1 12.5 20a8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8A8.5 8.5 0 0 1 8.7 3.9a8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5z"/>',
   gallery:
@@ -185,8 +185,8 @@ function toast(text) {
 }
 function theme() {
   document.documentElement.dataset.theme = "dark";
-  tg?.setHeaderColor?.("#171819");
-  tg?.setBackgroundColor?.("#171819");
+  tg?.setHeaderColor?.("#151517");
+  tg?.setBackgroundColor?.("#151517");
 }
 function clearPrivate() {
   S.epoch++;

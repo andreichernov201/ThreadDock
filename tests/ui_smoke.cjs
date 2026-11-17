@@ -43,7 +43,12 @@ const assert = require("node:assert/strict");
     assert.equal(await page.locator(".sidebar").isVisible(), false);
     assert(await page.locator(".bottom-nav").isVisible());
     await screenshot("mobile-feed");
-    console.log("UI_OVERFLOW " + JSON.stringify(await page.evaluate(() => [...document.querySelectorAll("*")].filter(el => el.getBoundingClientRect().right > innerWidth + 1).map(el => ({tag:el.tagName, cls:el.className, width:el.getBoundingClientRect().width, right:el.getBoundingClientRect().right})))));
+    const navBounds = await page.locator(".bottom-nav").evaluate(el => {
+      const rect = el.getBoundingClientRect();
+      return { top: rect.top, bottom: rect.bottom, height: innerHeight, position: getComputedStyle(el).position };
+    });
+    console.log("UI_NAV_BOUNDS " + JSON.stringify(navBounds));
+    assert(navBounds.top >= 0 && navBounds.top < navBounds.height - 40 && navBounds.bottom <= navBounds.height + 1);
     assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
     await page.locator('[data-action="filter"][data-mode="edited"]').click();
     await page.locator(".event-row").first().click();

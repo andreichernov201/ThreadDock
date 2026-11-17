@@ -173,9 +173,7 @@ class EventMediaPolicyTests(ArchiveFixture, unittest.TestCase):
 
     def test_retired_copy_task_does_not_block_a_later_real_deletion(self):
         identifier = self.ingest(media=[self.photo()])
-        media_id = self.repo.db.execute(
-            "SELECT id FROM archive_media WHERE message_id=?", (identifier,)
-        ).fetchone()[0]
+        media_id = self.repo.db.execute("SELECT id FROM archive_media WHERE message_id=?", (identifier,)).fetchone()[0]
         task_id = self.repo.enqueue(10, "media", {"media_id": media_id}, dedupe=f"media:{media_id}")
         self.repo.task_status(task_id, "done")
         self.repo.stage_untriggered_media()
@@ -195,7 +193,10 @@ class EventMediaPolicyTests(ArchiveFixture, unittest.TestCase):
         self.repo.stage_untriggered_media()
         self.repo.delete_messages(10, "connection-10", 30, [1], "Test chat")
         self.assertEqual(
-            self.repo.db.execute("SELECT count(*) FROM archive_tasks WHERE kind='media' AND status='pending'").fetchone()[0], 1
+            self.repo.db.execute(
+                "SELECT count(*) FROM archive_tasks WHERE kind='media' AND status='pending'"
+            ).fetchone()[0],
+            1,
         )
 
     def test_first_seen_edit_is_retained(self):
@@ -514,9 +515,7 @@ class ServiceTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
 
     async def test_staged_file_cannot_be_downloaded_by_a_stale_task(self):
         identifier = self.ingest(media=[self.photo()])
-        media_id = self.repo.db.execute(
-            "SELECT id FROM archive_media WHERE message_id=?", (identifier,)
-        ).fetchone()[0]
+        media_id = self.repo.db.execute("SELECT id FROM archive_media WHERE message_id=?", (identifier,)).fetchone()[0]
         await self.service._save_media({"payload": {"media_id": media_id}}, self.repo.owner(10))
         self.bot.download.assert_not_awaited()
 

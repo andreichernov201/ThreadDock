@@ -289,7 +289,7 @@ export function createDemoApi() {
       if (route === "/api/events") {
         let items = events.filter((item) =>
           item.kind !== "new" && (!Number(url.searchParams.get("chat")) ||
-          item.chat_id === Number(url.searchParams.get("chat")))
+            item.chat_id === Number(url.searchParams.get("chat")))
         );
         const kind = url.searchParams.get("kind");
         if (kind && kind !== "all") {
@@ -298,7 +298,13 @@ export function createDemoApi() {
           );
         }
         const counts = {};
-        for (const event of events.filter((item) => item.kind !== "new" && (!Number(url.searchParams.get("chat")) || item.chat_id === Number(url.searchParams.get("chat"))))) {
+        for (
+          const event of events.filter((item) =>
+            item.kind !== "new" &&
+            (!Number(url.searchParams.get("chat")) ||
+              item.chat_id === Number(url.searchParams.get("chat")))
+          )
+        ) {
           counts[event.kind] = (counts[event.kind] || 0) + 1;
         }
         return { items, next_cursor: null, counts };
@@ -306,8 +312,12 @@ export function createDemoApi() {
       if (route === "/api/gallery") {
         return {
           items: media.filter((item) =>
-            events.some((event) => event.message_id === item.message_id && ["edited", "deleted", "reply_media"].includes(event.kind)) &&
-            (!Number(url.searchParams.get("chat")) || item.chat_id === Number(url.searchParams.get("chat")))
+            events.some((event) =>
+              event.message_id === item.message_id &&
+              ["edited", "deleted", "reply_media"].includes(event.kind)
+            ) &&
+            (!Number(url.searchParams.get("chat")) ||
+              item.chat_id === Number(url.searchParams.get("chat")))
           ),
           next_cursor: null,
         };

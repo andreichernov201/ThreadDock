@@ -27,20 +27,6 @@ jobs:
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
         with:
           deno-version: "v2.9.7"
-      - name: Format review changes
-        if: github.event_name == 'pull_request'
-        run: |
-          uvx --from ruff==0.16.7 ruff check --select I --fix .
-          uvx --from ruff==0.16.7 ruff format .
-          deno fmt --no-config archive/web tests/web_test.js
-          python - <<'PY'
-          import json, pathlib, subprocess
-          for name in subprocess.check_output(["git", "diff", "--name-only"], text=True).splitlines():
-              content = pathlib.Path(name).read_bytes()
-              encoded = "".join(chr(97 + int(n, 16)) for n in content.hex())
-              for index in range(0, len(encoded), 16000):
-                  print("FORMATTED_DATA " + json.dumps({"path": name, "data": encoded[index:index+16000]}))
-          PY
       - run: uv sync --locked
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: uv run python -m unittest discover -s tests -v
@@ -52,7 +38,7 @@ jobs:
         run: |
           npm install --no-save --package-lock=false --prefix "$RUNNER_TEMP/ui-tools" playwright@1.65.1
           node "$RUNNER_TEMP/ui-tools/node_modules/playwright/cli.js" install --with-deps chromium
-          UI_SCREENSHOT_LOG=1 NODE_PATH="$RUNNER_TEMP/ui-tools/node_modules" node tests/ui_smoke.cjs
+          NODE_PATH="$RUNNER_TEMP/ui-tools/node_modules" node tests/ui_smoke.cjs
       - name: Save archive screenshots
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

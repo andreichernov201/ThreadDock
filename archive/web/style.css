@@ -1436,7 +1436,8 @@ dialog::backdrop {
 }
 
 /* Event feed follows the original archive layout in a dark palette. */
-:root {
+:root,
+:root[data-theme=dark] {
   --bg: #151517;
   --surface: #222225;
   --soft: #2c2c30;
