@@ -34,7 +34,7 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: ${{ matrix.python }}
-          version: "0.11.23"
+          version: "0.13.9"
           enable-cache: true
       - run: uv sync --locked
       - run: uv run --locked python scripts/check.py
@@ -52,11 +52,11 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: "3.14"
-          version: "0.11.23"
+          version: "0.13.9"
           enable-cache: true
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
         with:
-          deno-version: "v2.9.7"
+          deno-version: "v2.9.8"
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: "24"
@@ -129,8 +129,36 @@ jobs:
           reference=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$tag" | awk -v prefix="$repository@" 'index($0,prefix)==1 {print;exit}')
           [[ "$reference" =~ ^ghcr\.io/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$ ]]
           printf 'reference=%s\n' "$reference" >> "$GITHUB_OUTPUT"
+  development:
+    name: Development container
+    concurrency:
+      group: development-${{ github.ref }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: .devcontainer/Dockerfile
+          load: true
+          tags: threaddock:dev
+          cache-from: type=gha,scope=threaddock-dev
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=gha,mode=max,scope=threaddock-dev' || '' }}
+      - name: Run checks inside the development environment
+        run: |
+          docker run --rm -v "$PWD:/workspace" -w /workspace threaddock:dev sh -ec '
+            uv sync --locked --extra media
+            npm ci
+            npx playwright install --with-deps chromium
+            uv run --locked --extra media python scripts/check.py --full
+          '
   deploy:
-    needs: [compatibility, test, image]
+    needs: [compatibility, test, image, development]
     if: >-
       github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
       vars.DEPLOY_ENABLED == 'true'

@@ -136,3 +136,4 @@ Telegram-пачки повторно не отправляются. Если р�
 Копия базы без файлов не заменяет полную копию архива.
 Схема, сетевые ограничения и контракты: [docs/architecture.md](docs/architecture.md).
 Сообщения об уязвимостях: [SECURITY.md](SECURITY.md). Лицензия: [MIT](LICENSE).
+Изменения по версиям: [CHANGELOG.md](CHANGELOG.md).
