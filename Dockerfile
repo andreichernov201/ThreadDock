@@ -1,6 +1,6 @@
 FROM ghcr.io/astral-sh/uv:0.13.9 AS uv
 FROM denoland/deno:bin-2.9.8 AS deno
-FROM python:3.14-slim
+FROM python:3.15-slim
 
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
     UV_PROJECT_ENVIRONMENT=/opt/venv PATH="/opt/venv/bin:$PATH" \
