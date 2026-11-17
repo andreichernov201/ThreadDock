@@ -52,7 +52,15 @@ jobs:
         run: |
           npm install --no-save --package-lock=false --prefix "$RUNNER_TEMP/ui-tools" playwright@1.65.1
           node "$RUNNER_TEMP/ui-tools/node_modules/playwright/cli.js" install --with-deps chromium
-          NODE_PATH="$RUNNER_TEMP/ui-tools/node_modules" node tests/ui_smoke.cjs
+          UI_SCREENSHOT_LOG=1 NODE_PATH="$RUNNER_TEMP/ui-tools/node_modules" node tests/ui_smoke.cjs
+      - name: Save archive screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: archive-ui
+          path: ${{ runner.temp }}/threaddock-ui/*.png
+          if-no-files-found: ignore
+          retention-days: 7
       - run: for file in scripts/*.sh; do bash -n "$file"; done
       - run: cp .env.example .env
       - run: docker compose config --quiet

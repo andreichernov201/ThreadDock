@@ -26,7 +26,12 @@ const assert = require("node:assert/strict");
   await page.route("https://telegram.org/**", route => route.abort());
   const url = "http://127.0.0.1:" + server.address().port + "/?demo=1";
   async function screenshot(name) {
-    const encoded = (await page.screenshot()).toString("hex").replace(/[0-9a-f]/g, c => String.fromCharCode(97 + parseInt(c, 16)));
+    const bytes = await page.screenshot();
+    const directory = path.join(process.env.RUNNER_TEMP || ".deploy-work", "threaddock-ui");
+    await fs.mkdir(directory, { recursive: true });
+    await fs.writeFile(path.join(directory, name + ".png"), bytes);
+    if (process.env.UI_SCREENSHOT_LOG !== "1") return;
+    const encoded = bytes.toString("hex").replace(/[0-9a-f]/g, c => String.fromCharCode(97 + parseInt(c, 16)));
     for (let index = 0; index < encoded.length; index += 16000) {
       console.log("SCREENSHOT_CHUNK " + JSON.stringify({ name, data: encoded.slice(index, index + 16000) }));
     }

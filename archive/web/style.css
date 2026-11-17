@@ -1938,3 +1938,13 @@ a:focus-visible {
     border-radius: 0;
   }
 }
+
+.demo-banner {
+  margin: 0 0 16px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-radius: 8px;
+}
+.filters {
+  flex-wrap: nowrap;
+}
