@@ -26,9 +26,9 @@ const assert = require("node:assert/strict");
   await page.route("https://telegram.org/**", route => route.abort());
   const url = "http://127.0.0.1:" + server.address().port + "/?demo=1";
   async function screenshot(name) {
-    const encoded = (await page.screenshot()).toString("base64");
+    const encoded = (await page.screenshot()).toString("hex").replace(/[0-9a-f]/g, c => String.fromCharCode(97 + parseInt(c, 16)));
     for (let index = 0; index < encoded.length; index += 16000) {
-      console.log("SCREENSHOT_CHUNK " + JSON.stringify({ name, index, data: encoded.slice(index, index + 16000) }));
+      console.log("SCREENSHOT_CHUNK " + JSON.stringify({ name, data: encoded.slice(index, index + 16000) }));
     }
   }
   try {

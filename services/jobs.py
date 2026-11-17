@@ -126,7 +126,7 @@ class JobQueue:
                 error.retryable,
                 round((time.monotonic() - started) * 1000),
             )
-        except Exception as error:
+        except Exception:
             # SafeFormatter drops exception text and preserves code locations.
             row = self.database.get_job(job.id)
             self.database.status(job.id, "uncertain" if row["status"] == "sending" else "failed", "internal_error")

@@ -307,10 +307,26 @@ function shell(content) {
   }</button>
     </aside><main class="main">${demo ? COPY.DEMO_BANNER : ""}
     <header class="topbar"><h1>${e(t(title))}</h1><div class="top-actions">${
-      S.view === "feed"
-        ? `<button class="icon-button round ${S.showChatFilter ? "on" : ""}" data-action="feed-filters" aria-label="${e(t(COPY.FILTERS))}" aria-expanded="${S.showChatFilter}">${icon("filter")}</button><button class="icon-button round ${S.showSearch ? "on" : ""}" data-action="feed-search" aria-label="${e(t(COPY.SEARCH))}" aria-expanded="${S.showSearch}">${icon("search")}</button>`
-        : `<button class="icon-button" data-action="refresh" aria-label="${e(t(COPY.REFRESH))}">${icon("feed")}</button><button class="icon-button" data-action="export" aria-label="${e(t(COPY.EXPORT))}">${icon("download")}</button>`
-    }</div></header>
+    S.view === "feed"
+      ? `<button class="icon-button round ${
+        S.showChatFilter ? "on" : ""
+      }" data-action="feed-filters" aria-label="${
+        e(t(COPY.FILTERS))
+      }" aria-expanded="${S.showChatFilter}">${
+        icon("filter")
+      }</button><button class="icon-button round ${
+        S.showSearch ? "on" : ""
+      }" data-action="feed-search" aria-label="${
+        e(t(COPY.SEARCH))
+      }" aria-expanded="${S.showSearch}">${icon("search")}</button>`
+      : `<button class="icon-button" data-action="refresh" aria-label="${
+        e(t(COPY.REFRESH))
+      }">${
+        icon("feed")
+      }</button><button class="icon-button" data-action="export" aria-label="${
+        e(t(COPY.EXPORT))
+      }">${icon("download")}</button>`
+  }</div></header>
     ${S.view !== "settings" ? statusBanner() : ""}${content}</main>
     <nav class="bottom-nav">${navButtons()}</nav></div>`;
   const sentinel = document.querySelector("#more-sentinel");
@@ -362,12 +378,49 @@ function statCards() {
 }
 
 function filterBar() {
-  const labels = [["all", COPY.ALL_EVENTS], ["deleted", COPY.DELETIONS], ["edited", COPY.EDITS], ["reply_media", COPY.DISAPPEARING], ["favorites", COPY.FAVORITES], ["keyword", COPY.KEYWORDS]];
-  return `<div class="filters">${labels.map(([key, label]) => `<button class="filter ${S.mode === key ? "active" : ""}" data-action="filter" data-mode="${key}">${e(t(label))}${S.counts[key] ? `<span>${fmt(S.counts[key])}</span>` : ""}</button>`).join("")}</div>
-  <div class="archive-search" ${!S.showSearch && !S.showChatFilter && !S.chat ? "hidden" : ""}>
-    <div class="search-wrap search-global" ${!S.showSearch ? "hidden" : ""}>${icon("search")}<input id="global-search" value="${e(S.query)}" placeholder="${e(t(COPY.SEARCH_YOUR_ARCHIVE))}" aria-label="${e(t(COPY.SEARCH_YOUR_ARCHIVE))}"></div>
-    <select id="archive-chat" ${!S.showChatFilter && !S.chat ? "hidden" : ""} aria-label="${e(t(COPY.CONVERSATION))}"><option value="0">${e(t(COPY.ALL_CHATS))}</option>${S.chats.map((chat) => `<option value="${chat.id}" ${S.chat === chat.id ? "selected" : ""}>${e(chat.title)}</option>`).join("")}</select>
-    ${S.chat ? `<button class="icon-button" data-action="chat-settings" aria-label="${e(t(COPY.SETTINGS))}">${icon("settings")}</button>` : ""}
+  const labels = [
+    ["all", COPY.ALL_EVENTS],
+    ["deleted", COPY.DELETIONS],
+    ["edited", COPY.EDITS],
+    ["reply_media", COPY.DISAPPEARING],
+    ["favorites", COPY.FAVORITES],
+    ["keyword", COPY.KEYWORDS],
+  ];
+  return `<div class="filters">${
+    labels.map(([key, label]) =>
+      `<button class="filter ${
+        S.mode === key ? "active" : ""
+      }" data-action="filter" data-mode="${key}">${e(t(label))}${
+        S.counts[key] ? `<span>${fmt(S.counts[key])}</span>` : ""
+      }</button>`
+    ).join("")
+  }</div>
+  <div class="archive-search" ${
+    !S.showSearch && !S.showChatFilter && !S.chat ? "hidden" : ""
+  }>
+    <div class="search-wrap search-global" ${!S.showSearch ? "hidden" : ""}>${
+    icon("search")
+  }<input id="global-search" value="${e(S.query)}" placeholder="${
+    e(t(COPY.SEARCH_YOUR_ARCHIVE))
+  }" aria-label="${e(t(COPY.SEARCH_YOUR_ARCHIVE))}"></div>
+    <select id="archive-chat" ${
+    !S.showChatFilter && !S.chat ? "hidden" : ""
+  } aria-label="${e(t(COPY.CONVERSATION))}"><option value="0">${
+    e(t(COPY.ALL_CHATS))
+  }</option>${
+    S.chats.map((chat) =>
+      `<option value="${chat.id}" ${S.chat === chat.id ? "selected" : ""}>${
+        e(chat.title)
+      }</option>`
+    ).join("")
+  }</select>
+    ${
+    S.chat
+      ? `<button class="icon-button" data-action="chat-settings" aria-label="${
+        e(t(COPY.SETTINGS))
+      }">${icon("settings")}</button>`
+      : ""
+  }
   </div>`;
 }
 function empty(
@@ -392,20 +445,59 @@ function eventFeed() {
     const stamp = item.occurred_at || item.sent_at, d = date(stamp);
     let divider = "";
     if (d !== last) {
-      const label = d === date(Date.now() / 1000) ? t(COPY.TODAY) : d === date(Date.now() / 1000 - 86400) ? t(COPY.YESTERDAY) : d;
-      divider = `${opened ? "</div>" : ""}<div class="day-divider">${e(label)}</div><div class="feed-day">`;
-      opened = true; last = d;
+      const label = d === date(Date.now() / 1000)
+        ? t(COPY.TODAY)
+        : d === date(Date.now() / 1000 - 86400)
+        ? t(COPY.YESTERDAY)
+        : d;
+      divider = `${opened ? "</div>" : ""}<div class="day-divider">${
+        e(label)
+      }</div><div class="feed-day">`;
+      opened = true;
+      last = d;
     }
     const kind = item.kind || "search";
-    const label = {edited: COPY.MESSAGE_EDITED, deleted: COPY.MESSAGE_DELETED, unknown_deleted: COPY.MESSAGE_DELETED, keyword: COPY.KEYWORD_MATCH, profile: COPY.PROFILE_CHANGED, reply_media: COPY.REPLY_MEDIA, search: COPY.SEARCH_RESULTS}[kind] || COPY.SERVICE_MESSAGE;
-    const glyph = {edited: "edit", deleted: "trash", unknown_deleted: "trash", keyword: "key", profile: "settings", reply_media: "file"}[kind] || "chats";
-    const name = item.chat_title || S.chats.find((c) => c.id === item.chat_id)?.title || COPY.CONVERSATION;
+    const label = {
+      edited: COPY.MESSAGE_EDITED,
+      deleted: COPY.MESSAGE_DELETED,
+      unknown_deleted: COPY.MESSAGE_DELETED,
+      keyword: COPY.KEYWORD_MATCH,
+      profile: COPY.PROFILE_CHANGED,
+      reply_media: COPY.REPLY_MEDIA,
+      search: COPY.SEARCH_RESULTS,
+    }[kind] || COPY.SERVICE_MESSAGE;
+    const glyph = {
+      edited: "edit",
+      deleted: "trash",
+      unknown_deleted: "trash",
+      keyword: "key",
+      profile: "settings",
+      reply_media: "file",
+    }[kind] || "chats";
+    const name = item.chat_title || S.chats.find((c) =>
+      c.id === item.chat_id
+    )?.title || COPY.CONVERSATION;
     const message = item.message_id || kind === "search";
     const id = message ? (item.message_id || item.id) : item.chat_id;
-    const body = item.match_text || item.body || (kind === "unknown_deleted" ? COPY.UNKNOWN_MESSAGE : kind === "profile" ? COPY.PROFILE_UPDATE : COPY.SERVICE_MESSAGE);
-    return `${divider}<button class="event-row" data-action="${message ? "message" : "chat"}" data-id="${id}" aria-label="${e(name)}: ${e(t(label))}">
-      <span class="event-avatar avatar c${(item.chat_id || 0) % 5}">${e(initials(name))}<span class="event-mark ${e(kind)}" title="${e(t(label))}">${icon(glyph)}</span></span>
-      <span class="event-main"><span class="event-line"><strong>${e(name)}</strong><time>${time(stamp)}</time></span><span class="event-text">${e(body)}</span></span>
+    const body = item.match_text || item.body ||
+      (kind === "unknown_deleted"
+        ? COPY.UNKNOWN_MESSAGE
+        : kind === "profile"
+        ? COPY.PROFILE_UPDATE
+        : COPY.SERVICE_MESSAGE);
+    return `${divider}<button class="event-row" data-action="${
+      message ? "message" : "chat"
+    }" data-id="${id}" aria-label="${e(name)}: ${e(t(label))}">
+      <span class="event-avatar avatar c${(item.chat_id || 0) % 5}">${
+      e(initials(name))
+    }<span class="event-mark ${e(kind)}" title="${e(t(label))}">${
+      icon(glyph)
+    }</span></span>
+      <span class="event-main"><span class="event-line"><strong>${
+      e(name)
+    }</strong><time>${time(stamp)}</time></span><span class="event-text">${
+      e(body)
+    }</span></span>
       ${item.favorite ? `<span class="event-star">${icon("star")}</span>` : ""}
     </button>`;
   }).join("");
@@ -755,24 +847,109 @@ function openModal(title, body, actions = "") {
 async function openMessage(id) {
   const message = await api.request(`/api/messages/${id}`);
   S.openMessage = message;
-  const kind = message.deleted_at ? "deleted" : message.edited_at ? "edited" : "reply_media";
-  const label = kind === "deleted" ? COPY.MESSAGE_DELETED : kind === "edited" ? COPY.MESSAGE_EDITED : COPY.REPLY_MEDIA;
+  const kind = message.deleted_at
+    ? "deleted"
+    : message.edited_at
+    ? "edited"
+    : "reply_media";
+  const label = kind === "deleted"
+    ? COPY.MESSAGE_DELETED
+    : kind === "edited"
+    ? COPY.MESSAGE_EDITED
+    : COPY.REPLY_MEDIA;
   const changes = (message.versions || []).slice(1);
-  const history = changes.map((version, index) => `<section class="version"><small>${e(t(COPY.VERSION_PREFIX))}${index + 1} · ${time(version.changed_at, true)}</small><pre>${
-    version.diff?.length ? version.diff.map((part) => {
-      const tag = part.kind === "added" ? "ins" : part.kind === "removed" ? "del" : "span";
-      return `<${tag}>${e(part.text)}</${tag}>`;
-    }).join("") : e(version.body)
-  }</pre></section>`).join("");
-  const attachments = (message.media || []).map((media) => `<button class="media-attachment" data-action="media" data-id="${media.id}">${icon(media.kind === "photo" ? "gallery" : media.kind === "video" ? "video" : "file")}<span>${e(media.filename)}<small>${e(t(media.status === "ready" ? COPY.SAVED : media.protected ? COPY.PROTECTED_FILE : COPY.IN_TELEGRAM))}</small></span>${icon("arrow")}</button>`).join("");
-  document.querySelector("#modal-content").innerHTML = `<div class="record-toolbar"><button class="icon-button round" data-action="close-modal" aria-label="${e(t(COPY.CLOSE))}">${icon("back")}</button><button class="icon-button round favorite ${message.favorite ? "on" : ""}" data-action="favorite" data-id="${id}" data-value="${message.favorite ? "0" : "1"}" aria-label="${e(t(COPY.FAVORITES))}">${icon("star")}</button></div>
-  <div class="record-header"><div class="avatar c${message.chat_id % 5}">${e(initials(message.chat_title))}</div><div><h2>${e(message.chat_title)}</h2><p>${time(message.sent_at, true)}</p></div></div>
-  <span class="record-state ${kind}">${icon(kind === "deleted" ? "trash" : "edit")}${e(t(label))}</span>
-  <div class="record-content">${message.body ? `<pre>${e(message.body)}</pre>` : attachments ? "" : `<p class="muted">${e(t(COPY.UNKNOWN_MESSAGE))}</p>`}${attachments}</div>
-  ${history ? `<h3 class="section-label">${e(t(COPY.EDIT_HISTORY))} · ${changes.length}</h3>${history}<p class="diff-legend"><del>${e(t(COPY.BEFORE))}</del> → <ins>${e(t(COPY.AFTER))}</ins></p>` : ""}
-  <h3 class="section-label">${e(t(COPY.DETAILS))}</h3><dl class="record-details"><div><dt>${e(t(COPY.RECEIVED))}</dt><dd>${time(message.sent_at, true)}</dd></div>${message.edited_at ? `<div><dt>${e(t(COPY.LAST_EDIT))}</dt><dd>${time(message.edited_at, true)}</dd></div>` : ""}${message.deleted_at ? `<div><dt>${e(t(COPY.DELETED_AT))}</dt><dd>${time(message.deleted_at, true)}</dd></div>` : ""}</dl>
-  <div class="record-actions"><button data-action="chat" data-id="${message.chat_id}">${icon("chats")}${e(t(COPY.OPEN_CHAT))}${icon("arrow")}</button></div>
-  <div class="record-actions"><button class="danger" data-action="delete-message" data-id="${id}">${icon("trash")}${e(t(COPY.DELETE_RECORD))}</button></div><p class="record-note">${e(t(COPY.ARCHIVE_COPY_NOTE))}</p>`;
+  const history = changes.map((version, index) =>
+    `<section class="version"><small>${e(t(COPY.VERSION_PREFIX))}${
+      index + 1
+    } · ${time(version.changed_at, true)}</small><pre>${
+      version.diff?.length
+        ? version.diff.map((part) => {
+          const tag = part.kind === "added"
+            ? "ins"
+            : part.kind === "removed"
+            ? "del"
+            : "span";
+          return `<${tag}>${e(part.text)}</${tag}>`;
+        }).join("")
+        : e(version.body)
+    }</pre></section>`
+  ).join("");
+  const attachments = (message.media || []).map((media) =>
+    `<button class="media-attachment" data-action="media" data-id="${media.id}">${
+      icon(
+        media.kind === "photo"
+          ? "gallery"
+          : media.kind === "video"
+          ? "video"
+          : "file",
+      )
+    }<span>${e(media.filename)}<small>${
+      e(t(
+        media.status === "ready"
+          ? COPY.SAVED
+          : media.protected
+          ? COPY.PROTECTED_FILE
+          : COPY.IN_TELEGRAM,
+      ))
+    }</small></span>${icon("arrow")}</button>`
+  ).join("");
+  document.querySelector("#modal-content").innerHTML =
+    `<div class="record-toolbar"><button class="icon-button round" data-action="close-modal" aria-label="${
+      e(t(COPY.CLOSE))
+    }">${icon("back")}</button><button class="icon-button round favorite ${
+      message.favorite ? "on" : ""
+    }" data-action="favorite" data-id="${id}" data-value="${
+      message.favorite ? "0" : "1"
+    }" aria-label="${e(t(COPY.FAVORITES))}">${icon("star")}</button></div>
+  <div class="record-header"><div class="avatar c${message.chat_id % 5}">${
+      e(initials(message.chat_title))
+    }</div><div><h2>${e(message.chat_title)}</h2><p>${
+      time(message.sent_at, true)
+    }</p></div></div>
+  <span class="record-state ${kind}">${
+      icon(kind === "deleted" ? "trash" : "edit")
+    }${e(t(label))}</span>
+  <div class="record-content">${
+      message.body
+        ? `<pre>${e(message.body)}</pre>`
+        : attachments
+        ? ""
+        : `<p class="muted">${e(t(COPY.UNKNOWN_MESSAGE))}</p>`
+    }${attachments}</div>
+  ${
+      history
+        ? `<h3 class="section-label">${
+          e(t(COPY.EDIT_HISTORY))
+        } · ${changes.length}</h3>${history}<p class="diff-legend"><del>${
+          e(t(COPY.BEFORE))
+        }</del> → <ins>${e(t(COPY.AFTER))}</ins></p>`
+        : ""
+    }
+  <h3 class="section-label">${
+      e(t(COPY.DETAILS))
+    }</h3><dl class="record-details"><div><dt>${e(t(COPY.RECEIVED))}</dt><dd>${
+      time(message.sent_at, true)
+    }</dd></div>${
+      message.edited_at
+        ? `<div><dt>${e(t(COPY.LAST_EDIT))}</dt><dd>${
+          time(message.edited_at, true)
+        }</dd></div>`
+        : ""
+    }${
+      message.deleted_at
+        ? `<div><dt>${e(t(COPY.DELETED_AT))}</dt><dd>${
+          time(message.deleted_at, true)
+        }</dd></div>`
+        : ""
+    }</dl>
+  <div class="record-actions"><button data-action="chat" data-id="${message.chat_id}">${
+      icon("chats")
+    }${e(t(COPY.OPEN_CHAT))}${icon("arrow")}</button></div>
+  <div class="record-actions"><button class="danger" data-action="delete-message" data-id="${id}">${
+      icon("trash")
+    }${e(t(COPY.DELETE_RECORD))}</button></div><p class="record-note">${
+      e(t(COPY.ARCHIVE_COPY_NOTE))
+    }</p>`;
   modal.dataset.view = "record";
   modal.setAttribute("aria-label", message.chat_title);
   if (!modal.open) modal.showModal();
@@ -1013,8 +1190,7 @@ document.addEventListener("click", async (event) => {
     } else if (action === "feed-filters") {
       S.showChatFilter = !S.showChatFilter;
       render();
-    }
-    else if (action === "chat") {
+    } else if (action === "chat") {
       if (modal.open) modal.close();
       S.chat = Number(button.dataset.id);
       S.view = "feed";

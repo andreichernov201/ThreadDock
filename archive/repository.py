@@ -448,6 +448,12 @@ class ArchiveRepository:
     def stage_untriggered_media(self) -> list[str]:
         """Retire old downloads, preserving Telegram references for later deletions."""
         with self.db:
+            # Earlier versions treated every replied attachment as disappearing.
+            self.db.execute(
+                """DELETE FROM archive_events WHERE kind='reply_media' AND NOT EXISTS (
+                SELECT 1 FROM archive_versions v WHERE v.id=archive_events.version_id
+                AND (json_extract(v.payload,'$.protected')=1 OR json_extract(v.payload,'$.ephemeral')=1))"""
+            )
             rows = self.db.execute(
                 f"SELECT a.id,a.local_path FROM archive_media a JOIN archive_messages m ON m.id=a.message_id WHERE NOT ({RETAINED_MESSAGE}) AND a.status!='staged'"
             ).fetchall()
@@ -456,8 +462,8 @@ class ArchiveRepository:
                 [(row["id"],) for row in rows],
             )
             self.db.execute(
-                """UPDATE archive_tasks SET status='done',error_code='no_archive_event'
-                WHERE kind='media' AND status IN ('pending','running') AND json_extract(payload,'$.media_id') IN (
+                """UPDATE archive_tasks SET status='done',dedupe=NULL,error_code='no_archive_event'
+                WHERE kind='media' AND status NOT IN ('sending','uncertain') AND json_extract(payload,'$.media_id') IN (
                   SELECT id FROM archive_media WHERE status='staged')"""
             )
         return [row["local_path"] for row in rows if row["local_path"]]
@@ -508,7 +514,7 @@ class ArchiveRepository:
             "all": RETAINED_MESSAGE,
             "deleted": "deleted_at IS NOT NULL",
             "edited": "edited_at IS NOT NULL",
-            "favorites": "favorite=1",
+            "favorites": f"favorite=1 AND {RETAINED_MESSAGE}",
         }
         if mode not in conditions:
             raise ValueError(T.ARCHIVE_REPOSITORY_UNKNOWN_MESSAGE_FILTER)

@@ -44,7 +44,9 @@ class ArchiveFixture(DatabaseFixture):
             self.repo.update_owner(owner, {"enabled": True})
             self.repo.save_connection(f"connection-{owner}", owner, True, {"can_reply": True})
 
-    def ingest(self, owner=10, telegram_id=1, body="Original text", at=None, changed=None, media=None, archived=False, **kwargs):
+    def ingest(
+        self, owner=10, telegram_id=1, body="Original text", at=None, changed=None, media=None, archived=False, **kwargs
+    ):
         at = time.time() - 100 if at is None else at
         identifier = self.repo.ingest(
             owner_id=owner,
@@ -155,6 +157,32 @@ class EventMediaPolicyTests(ArchiveFixture, unittest.TestCase):
             )
         self.assertEqual(self.repo.stage_untriggered_media(), ["blobs/10/old"])
         self.assertEqual(len(self.repo.gallery(10)["items"]), 1)
+
+    def test_old_reply_media_event_does_not_keep_an_ordinary_file(self):
+        identifier = self.ingest(media=[self.photo()])
+        message = self.repo.message(10, identifier)
+        with self.repo.db:
+            version = self.repo.db.execute(
+                "SELECT id FROM archive_versions WHERE message_id=?", (identifier,)
+            ).fetchone()[0]
+            self.repo._event(10, message["chat_id"], identifier, "reply_media", time.time(), "legacy", version=version)
+            self.repo._activate_media(10, identifier, self.repo.owner(10)["media_types"])
+        self.repo.stage_untriggered_media()
+        self.assertEqual(self.repo.gallery(10)["items"], [])
+        self.assertEqual(self.repo.events(10)["items"], [])
+
+    def test_retired_copy_task_does_not_block_a_later_real_deletion(self):
+        identifier = self.ingest(media=[self.photo()])
+        media_id = self.repo.db.execute(
+            "SELECT id FROM archive_media WHERE message_id=?", (identifier,)
+        ).fetchone()[0]
+        task_id = self.repo.enqueue(10, "media", {"media_id": media_id}, dedupe=f"media:{media_id}")
+        self.repo.task_status(task_id, "done")
+        self.repo.stage_untriggered_media()
+        self.repo.delete_messages(10, "connection-10", 30, [1], "Test chat")
+        task = self.repo.claim()
+        self.assertEqual(task["kind"], "media")
+        self.assertNotEqual(task["id"], task_id)
 
     def test_first_seen_edit_is_retained(self):
         at = time.time() - 100
