@@ -1,5 +1,5 @@
 FROM ghcr.io/astral-sh/uv:0.13.9 AS uv
-FROM denoland/deno:bin-2.9.7 AS deno
+FROM denoland/deno:bin-2.9.8 AS deno
 FROM python:3.14-slim
 
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
