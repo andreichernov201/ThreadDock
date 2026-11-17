@@ -184,6 +184,20 @@ class EventMediaPolicyTests(ArchiveFixture, unittest.TestCase):
         self.assertEqual(task["kind"], "media")
         self.assertNotEqual(task["id"], task_id)
 
+    def test_retired_download_is_enqueued_again_after_later_deletion(self):
+        identifier = self.ingest(media=[self.photo()])
+        with self.repo.db:
+            media_id = self.repo.db.execute(
+                "SELECT id FROM archive_media WHERE message_id=?", (identifier,)
+            ).fetchone()[0]
+            self.repo.db.execute("UPDATE archive_media SET status='ready' WHERE id=?", (media_id,))
+            self.repo._enqueue(10, "media", {"media_id": media_id}, f"media:{media_id}")
+        self.repo.stage_untriggered_media()
+        self.repo.delete_messages(10, "connection-10", 30, [1], "Test chat")
+        self.assertEqual(
+            self.repo.db.execute("SELECT count(*) FROM archive_tasks WHERE kind='media' AND status='pending'").fetchone()[0], 1
+        )
+
     def test_first_seen_edit_is_retained(self):
         at = time.time() - 100
         identifier = self.ingest(at=at, changed=at + 1, media=[self.photo()])
@@ -497,6 +511,19 @@ class ServiceTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["status"], "ready")
         self.assertEqual(self.service.safe_path(row["local_path"]).read_bytes(), b"jpeg")
         self.assertNotIn("file_id", self.repo.message(10, identifier)["media"][0])
+
+    async def test_staged_file_cannot_be_downloaded_by_a_stale_task(self):
+        identifier = self.ingest(media=[self.photo()])
+        media_id = self.repo.db.execute(
+            "SELECT id FROM archive_media WHERE message_id=?", (identifier,)
+        ).fetchone()[0]
+        await self.service._save_media({"payload": {"media_id": media_id}}, self.repo.owner(10))
+        self.bot.download.assert_not_awaited()
+
+    async def test_export_contains_no_ordinary_message_snapshots(self):
+        self.ingest(body="ordinary message")
+        files = await write_export(self.repo, 10, self.root / "ordinary-export")
+        self.assertEqual(json.loads(files[0].read_text())["records"], [])
 
     async def test_no_disk_space_stops_download(self):
         identifier = self.ingest(media=[self.photo()], archived=True)
