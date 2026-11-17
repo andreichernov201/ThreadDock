@@ -1,6 +1,6 @@
 FROM ghcr.io/astral-sh/uv:0.11.23 AS uv
 FROM denoland/deno:bin-2.9.7 AS deno
-FROM python:3.14-slim
+FROM python:3.15-slim
 
 ARG YTDLP_VERSION=2026.10.26
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
