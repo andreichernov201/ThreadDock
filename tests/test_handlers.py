@@ -33,6 +33,18 @@ class HandlerTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.database.claim().url, "https://www.youtube.com/watch?v=abc")
         self.bot.send_message.assert_not_awaited()
 
+    async def test_unsupported_services_are_silent_in_private_chat(self):
+        for value in ("https://example.org/post/123", "https://www.twitch.tv/videos/123"):
+            with self.subTest(value=value):
+                await handle_links(incoming(value), self.app)
+                self.assertIsNone(self.database.claim())
+                self.bot.send_message.assert_not_awaited()
+
+    async def test_unsupported_link_does_not_block_supported_link(self):
+        await handle_links(incoming("https://example.org/post/1 https://youtu.be/abc"), self.app)
+        self.assertIsNotNone(self.database.claim())
+        self.bot.send_message.assert_not_awaited()
+
     async def test_plain_text_is_silent(self):
         await handle_links(incoming("Привет"), self.app)
         self.assertIsNone(self.database.claim())
