@@ -250,9 +250,9 @@ class MediaTools:
         return Asset(target.name, "photo", width=info.width, height=info.height)
 
     async def slideshow(self, images: list[Path], audio: Path | None, directory: Path) -> tuple[Asset, bool]:
-        duration = (await self.probe(audio)).duration if audio else len(images) * 3.0
-        if len(images) == 1 and audio:
-            duration = min(5.0, duration)
+        duration = len(images) * 3.0
+        if audio and len(images) == 1:
+            duration = min(duration, (await self.probe(audio)).duration)
         if not images or not 0 < duration <= self.settings.max_duration:
             raise MediaError(T.SERVICES_MEDIA_INVALID_SLIDESHOW_DURATION, code="duration_limit")
         frames: list[str] = []
@@ -281,7 +281,18 @@ class MediaTools:
         raw = directory / "slideshow.mp4"
         args = ["-protocol_whitelist", "file,pipe,crypto", "-f", "concat", "-safe", "1", "-i", "slides.txt"]
         if audio:
-            args += ["-protocol_whitelist", "file,pipe,crypto", "-i", str(audio), "-map", "0:v:0", "-map", "1:a:0"]
+            args += [
+                "-protocol_whitelist",
+                "file,pipe,crypto",
+                "-stream_loop",
+                "-1",
+                "-i",
+                str(audio),
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+            ]
         args += [
             "-vf",
             "fps=30,format=yuv420p",

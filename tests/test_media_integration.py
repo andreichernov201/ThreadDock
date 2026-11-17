@@ -62,7 +62,7 @@ class FFmpegIntegrationTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(info.duration, 3, delta=0.15)
         self.assertEqual(info.video_codec, "h264")
 
-    async def test_multiple_photos_follow_audio_duration(self):
+    async def test_multiple_photos_have_three_seconds_each_with_continuous_audio(self):
         photos = [self.fixture("one.jpg", "red"), self.fixture("two.jpg", "blue")]
         music = self.root / "music.m4a"
         subprocess.run(
@@ -87,9 +87,9 @@ class FFmpegIntegrationTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         asset, has_audio = await self.tools.slideshow(photos, music, self.root)
         info = await self.tools.probe(self.root / asset.filename)
         self.assertTrue(has_audio)
-        self.assertAlmostEqual(info.duration, 1.2, delta=0.15)
+        self.assertAlmostEqual(info.duration, 6, delta=0.15)
         self.assertEqual(info.audio_codec, "aac")
-        for second, expected in (("0.1", "red"), ("0.9", "blue")):
+        for second, expected in (("0.1", "red"), ("4.0", "blue")):
             result = subprocess.run(
                 [
                     "ffmpeg",
@@ -142,7 +142,7 @@ class FFmpegIntegrationTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
             asset, has_audio = await self.tools.slideshow([photo], music, self.root)
             self.assertTrue(has_audio)
             self.assertLessEqual(asset.duration, 5.0)
-            self.assertAlmostEqual(asset.duration, min(5, duration), delta=0.1)
+            self.assertAlmostEqual(asset.duration, min(3, duration), delta=0.1)
 
 
 @unittest.skipUnless(shutil.which("yt-dlp"), "yt-dlp is not installed")
