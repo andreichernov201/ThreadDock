@@ -5,11 +5,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from services.links import normalize_url
-from services.tiktok import PhotoModeError, TikTokPhotos
-
 from core.errors import MediaError
-from services.tiktok import parse_photo_page
+from services.links import normalize_url
+from services.tiktok import PhotoModeError, TikTokPhotos, parse_photo_page
 
 
 def page(item):
