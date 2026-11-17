@@ -18,7 +18,7 @@ yt-dlp или Deno соответствующие интеграционные �
 
 Полная среда описана в `.devcontainer/`: открой проект через **Dev Containers:
 Reopen in Container** в VS Code или создай GitHub Codespace. Она содержит Python,
-uv, FFmpeg, Deno, Node.js и Chromium; приложение автоматически не запускается.
+uv, Git/GitHub CLI, FFmpeg, Deno, Node.js и Chromium; приложение автоматически не запускается.
 Docker нужен только для локального Dev Container и сборки production-образа.
 
 Для полной проверки на своей машине установи FFmpeg/ffprobe, Deno 2 и Node.js 24:

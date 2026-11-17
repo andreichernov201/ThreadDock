@@ -4,7 +4,7 @@ FROM node:24-bookworm-slim AS node
 FROM python:3.15-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git openssh-client ffmpeg ca-certificates \
+    git gh openssh-client ffmpeg ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=uv /uv /usr/local/bin/uv
 COPY --from=deno /deno /usr/local/bin/deno
