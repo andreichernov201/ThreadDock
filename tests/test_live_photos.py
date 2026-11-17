@@ -4,7 +4,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from aiogram.types import FSInputFile, InputMediaLivePhoto, InputMediaPhoto
+from aiogram.types import FSInputFile, InputMediaPhoto, InputMediaVideo
 
 from core.errors import MediaError
 from core.models import Asset, MediaBundle
@@ -187,7 +187,7 @@ class MotionBundleTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
                 lookup.assert_not_awaited()
 
 
-class NativeDeliveryTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
+class MotionDeliveryTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         super().setUp()
         self.bundle_value = self.bundle(photos=2)
@@ -197,23 +197,22 @@ class NativeDeliveryTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         still = replace(self.bundle_value.originals[0], kind="photo")
         self.bundle_value = replace(self.bundle_value, video=None, originals=(still, live))
         photo = SimpleNamespace(message_id=11, photo=[SimpleNamespace(file_id="still-id")])
-        live_message = SimpleNamespace(
-            message_id=12, live_photo=SimpleNamespace(file_id="live-id", photo=[SimpleNamespace(file_id="cover-id")])
-        )
+        live_message = SimpleNamespace(message_id=12, video=SimpleNamespace(file_id="motion-video-id"))
         self.bot = SimpleNamespace(
             id=123,
             send_media_group=AsyncMock(return_value=[photo, live_message]),
-            send_live_photo=AsyncMock(return_value=live_message),
+            send_video=AsyncMock(return_value=live_message),
         )
         self.delivery = TelegramDelivery(self.bot, self.database, self.settings)
 
-    async def test_native_album_and_both_cached_components_survive_disk_eviction(self):
+    async def test_album_motion_is_playable_video_and_survives_disk_eviction(self):
         job = self.job(mode="photos")
         await self.delivery.deliver(job, self.bundle_value)
         media = self.bot.send_media_group.call_args.kwargs["media"]
         self.assertIsInstance(media[0], InputMediaPhoto)
-        self.assertIsInstance(media[1], InputMediaLivePhoto)
-        self.assertIsInstance(media[1].photo, FSInputFile)
+        self.assertIsInstance(media[1], InputMediaVideo)
+        self.assertIsInstance(media[1].media, FSInputFile)
+        self.assertTrue(media[1].supports_streaming)
         self.database.complete_job(job.id)
         for asset in self.bundle_value.assets:
             asset.path(self.bundle_value.directory).unlink()
@@ -222,24 +221,35 @@ class NativeDeliveryTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(cached)
         await self.delivery.deliver(next_job, cached)
         media = self.bot.send_media_group.call_args.kwargs["media"]
-        self.assertEqual(media[1].media, "live-id")
-        self.assertEqual(media[1].photo, "cover-id")
+        self.assertEqual(media[1].media, "motion-video-id")
 
-    async def test_cache_requires_cover_id_too(self):
+    async def test_legacy_native_ids_cannot_return_a_static_looking_cached_album(self):
         job = self.job(mode="photos")
-        await self.delivery.deliver(job, self.bundle_value)
-        cover = self.bundle_value.originals[1].photo_filename
-        self.database.forget_file_id(123, job.cache_key, cover, "photo")
+        still, live = self.bundle_value.originals
+        self.database.remember_delivery(job.cache_key, self.bundle_value)
+        self.database.save_file_id(123, job.cache_key, still.filename, "photo", "still-id")
+        self.database.save_file_id(123, job.cache_key, live.filename, "live_photo", "old-native-id")
+        self.database.save_file_id(123, job.cache_key, live.photo_filename, "photo", "old-cover-id")
         self.assertIsNone(self.delivery.cached(job))
+        await self.delivery.deliver(job, self.bundle_value)
+        self.assertIsInstance(self.bot.send_media_group.call_args.kwargs["media"][1].media, FSInputFile)
 
     async def test_degraded_result_is_not_reused_through_telegram_file_ids(self):
         job = self.job(mode="photos")
         await self.delivery.deliver(job, replace(self.bundle_value, motion_pending=True))
         self.assertIsNone(self.delivery.cached(job))
 
-    async def test_single_native_live_photo_uses_the_paired_method(self):
+    async def test_single_live_photo_uses_full_video_in_every_visual_mode(self):
+        live = self.bundle_value.originals[1]
+        bundle = replace(self.bundle_value, originals=(live,))
+        for mode in ("photos", "album", "video"):
+            item = bundle.items(mode)[0]
+            self.assertEqual(item.kind, "video")
+            self.assertEqual(item.duration, live.duration)
+            self.assertEqual(item.filename, live.filename)
+            self.assertFalse(item.photo_filename)
+        self.assertEqual(bundle.originals[0].kind, "live_photo")
         job = self.job(mode="photos")
-        bundle = replace(self.bundle_value, originals=(self.bundle_value.originals[1],))
         await self.delivery.deliver(job, bundle)
-        self.bot.send_live_photo.assert_awaited_once()
-        self.assertIn("photo", self.bot.send_live_photo.call_args.kwargs)
+        self.bot.send_video.assert_awaited_once()
+        self.assertEqual(self.bot.send_video.call_args.kwargs["duration"], int(live.duration))

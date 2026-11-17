@@ -48,7 +48,7 @@ class VideoLink:
             match = re.search(r"/status/(\d+)", parts.path)
             if match:
                 identity = f"x:{match[1]}"
-        version = "media-v4:" if self.platform == "TikTok" else "media-v3:"
+        version = "media-v5:" if self.platform == "TikTok" else "media-v3:"
         return hashlib.sha256((version + identity).encode()).hexdigest()
 
 

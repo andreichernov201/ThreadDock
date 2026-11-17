@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Literal
 
@@ -72,12 +72,19 @@ class MediaBundle:
 
     def items(self, mode: DeliveryMode) -> tuple[Asset, ...]:
         if mode == "photos":
-            return self.originals
-        if mode == "audio":
-            return (self.audio,) if self.audio else ()
-        if mode == "album" and self.originals and not self.media:
-            return self.originals
-        return self.media or ((self.video,) if self.video else self.originals)
+            items = self.originals
+        elif mode == "audio":
+            items = (self.audio,) if self.audio else ()
+        elif mode == "album" and self.originals and not self.media:
+            items = self.originals
+        else:
+            items = self.media or ((self.video,) if self.video else self.originals)
+        # Some clients show native Live Photo messages as stills despite Telegram
+        # storing their moving track. Deliver that full track as a regular video;
+        # keep the original pair in the bundle for retention and serialization.
+        return tuple(
+            replace(asset, kind="video", photo_filename="") if asset.kind == "live_photo" else asset for asset in items
+        )
 
     def serialize(self, data_root: Path) -> str:
         data = asdict(self)
