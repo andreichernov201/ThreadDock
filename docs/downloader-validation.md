@@ -22,6 +22,19 @@ yt-dlp CLI, Deno и Chromium. Включает существующие пров
 | Присланный TikTok Photo Mode с Live Photo | Получены две JPEG и музыка, подготовлен MP4 15,65 с. В публичном состоянии страницы доступны только статичные изображения; видеочасть Live Photo отсутствует. Сохранение её движения **не подтверждено**. |
 | Повторный запрос Story до добавления прямого page fallback | Наблюдался временный `source_blocked`. Успешная проверка не означает постоянную доступность источника. |
 
+На VPS в изолированном контейнере с новым кодом, без production-данных:
+
+- Photo Mode из присланной ссылки и YouTube: скачаны MP4 со звуком.
+- Story из присланной ссылки: первоначально `source_blocked`, повторная попытка
+  успешна со звуком. Отказы временные, число повторов ограничено.
+- Instagram Reel и Story из upstream-примеров: `source_temporary`; успешная
+  загрузка и отправка не подтверждены. Story из примера может быть устаревшей.
+- Vimeo из upstream-примера: `authentication`, доступный файл не получен.
+
+macOS ARM runner не получал задания: GitHub сообщил о нехватке capacity и
+`The job was not acquired by Runner of type hosted even after multiple attempts`.
+Матрица сохраняет проверку macOS на поддерживаемом `macos-26-intel`.
+
 Диагностика Live Photo проверяла `/photo/`, `/video/`, публичный item detail,
 embed/player и доступные публичные app endpoints. JPEG не содержат встроенного MP4.
 Не используются сторонние сайты-загрузчики, чужие credentials или обход приватности.
