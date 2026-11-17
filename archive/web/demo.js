@@ -287,7 +287,10 @@ export function createDemoApi() {
       }
       if (route === "/api/chats") return { items: chats };
       if (route === "/api/events") {
-        let items = events;
+        let items = events.filter((item) =>
+          !Number(url.searchParams.get("chat")) ||
+          item.chat_id === Number(url.searchParams.get("chat"))
+        );
         const kind = url.searchParams.get("kind");
         if (kind && kind !== "all") {
           items = items.filter((item) =>
@@ -299,7 +302,7 @@ export function createDemoApi() {
       if (route === "/api/gallery") {
         return {
           items: media.filter((item) =>
-            !url.searchParams.get("chat") ||
+            !Number(url.searchParams.get("chat")) ||
             item.chat_id === Number(url.searchParams.get("chat"))
           ),
           next_cursor: null,
@@ -308,7 +311,15 @@ export function createDemoApi() {
       if (route === "/api/search") {
         const q = url.searchParams.get("q")?.toLowerCase() || "";
         return {
-          items: messages.filter((item) => item.body.toLowerCase().includes(q))
+          items: messages.filter((item) =>
+            item.body.toLowerCase().includes(q) &&
+            (!Number(url.searchParams.get("chat")) ||
+              item.chat_id === Number(url.searchParams.get("chat"))) &&
+            events.some((event) => event.message_id === item.id) &&
+            (url.searchParams.get("kind") !== "deleted" || item.deleted_at) &&
+            (url.searchParams.get("kind") !== "edited" || item.edited_at) &&
+            (url.searchParams.get("kind") !== "favorites" || item.favorite)
+          )
             .map((item) => ({ ...item, match_text: item.body })),
           next_cursor: null,
         };

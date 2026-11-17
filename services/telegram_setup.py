@@ -22,6 +22,8 @@ async def configure_telegram(bot, archive_config):
         ("pause", T.SERVICES_TELEGRAM_SETUP_COMMAND_PAUSE),
         ("mute", T.SERVICES_TELEGRAM_SETUP_COMMAND_MUTE),
         ("delete_me", T.SERVICES_TELEGRAM_SETUP_COMMAND_DELETE),
+        ("optout", T.ARCHIVE_AUTHOR_OPTOUT_COMMAND),
+        ("optin", T.ARCHIVE_AUTHOR_OPTIN_COMMAND),
         ("help", T.SERVICES_TELEGRAM_SETUP_COMMAND_HELP),
     ]
     groups = [

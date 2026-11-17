@@ -67,9 +67,6 @@ class HandlerTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         self.database.touch_business_chat("conn", 10, datetime.now(UTC).timestamp())
         await handle_links(incoming(sender=99, business="conn"), self.app)
         self.assertEqual(self.database.claim().destination.requester_id, 99)
-
-    async def test_automated_business_messages_do_not_loop(self):
-        self.database.save_connection("conn", 99, True, True)
         self.assertIsNone(await self.app.destination(incoming(sender=123, business="conn", bot_sender=True)))
         automated = incoming(sender=99, business="conn").model_copy(
             update={"sender_business_bot": User(id=123, is_bot=True, first_name="Bot")}
@@ -86,6 +83,11 @@ class HandlerTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         await handle_links(incoming(text="hello", sender=20, business="conn"), self.app)
         await handle_links(incoming(sender=99, business="conn"), self.app)
         self.assertIsNotNone(self.database.claim())
+
+    async def test_owner_link_does_not_renew_incoming_window(self):
+        self.database.save_connection("conn", 99, True, True)
+        self.assertIsNone(await self.app.destination(incoming(sender=99, business="conn")))
+        self.assertFalse(self.database.business_can_send("conn", 10))
 
     async def test_business_incoming_can_queue(self):
         self.database.save_connection("conn", 99, True, True)
@@ -126,6 +128,7 @@ class HandlerTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
 
     async def test_valid_button_enqueues_action(self):
         job = self.job()
+        self.database.complete_job(job.id)
         query = SimpleNamespace(
             data=f"m:{job.id}:audio",
             from_user=User(id=20, is_bot=False, first_name="Owner"),
@@ -134,5 +137,46 @@ class HandlerTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
             id="callback",
         )
         await media_action(query, self.app)
-        self.database.status(job.id, "done")
         self.assertEqual(self.database.claim().mode, "audio")
+
+    async def test_ten_button_clicks_only_enqueue_one_action(self):
+        job = self.job()
+        self.database.complete_job(job.id)
+        for index in range(10):
+            await media_action(
+                SimpleNamespace(
+                    data=f"m:{job.id}:audio",
+                    from_user=incoming().from_user,
+                    message=incoming(),
+                    answer=AsyncMock(),
+                    id=f"click-{index}",
+                ),
+                self.app,
+            )
+        action = self.database.claim()
+        self.assertEqual(action.mode, "audio")
+        self.database.complete_job(action.id)
+        self.assertIsNone(self.database.claim())
+
+    async def test_retry_clicks_reuse_failure_once(self):
+        job = self.job(mode="photos")
+        self.database.delivered_piece(job.id, 0, [123])
+        self.database.status(job.id, "failed", "source_temporary")
+        self.database.offer_retry(job.id)
+        for index in range(10):
+            await media_action(
+                SimpleNamespace(
+                    data=f"r:{job.id}:{job.attempts}",
+                    from_user=incoming().from_user,
+                    message=incoming(),
+                    answer=AsyncMock(),
+                    id=f"click-{index}",
+                ),
+                self.app,
+            )
+        retry = self.database.claim()
+        self.assertEqual(retry.id, job.id)
+        self.assertEqual(retry.mode, "photos")
+        self.assertEqual(retry.progress, 1)
+        self.database.complete_job(retry.id)
+        self.assertIsNone(self.database.claim())

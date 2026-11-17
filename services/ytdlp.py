@@ -37,11 +37,14 @@ def build_command(settings: Settings, link: VideoLink, directory: Path, proxy: s
         "--socket-timeout",
         "15",
         "--retries",
-        "1",
+        "3",
         "--fragment-retries",
-        "1",
+        "3",
         "--extractor-retries",
-        "1",
+        "2",
+        "--retry-sleep",
+        "http:exp=1:5",
+        "--abort-on-unavailable-fragments",
         "--max-filesize",
         str(settings.max_download_bytes),
         "--match-filter",
@@ -80,12 +83,21 @@ def source_error(stderr: bytes) -> MediaError:
     text = stderr.decode("utf-8", errors="replace").lower()
     # Signed URL parameters may themselves contain words such as "private" or "404".
     text = re.sub(r"https?://\S+", "[url]", text)
-    if any(word in text for word in ("private", "login required", "sign in", "cookies", "age-restricted")):
+    if any(
+        word in text
+        for word in ("timed out", "429", "502", "503", "temporary", "resolve", "connection", "reset by peer")
+    ):
+        return MediaError(T.SERVICES_YTDLP_SOURCE_UNAVAILABLE, code="source_temporary", retryable=True)
+    if any(word in text for word in ("403", "captcha", "challenge", "status code 0", "impersonat", "cloudflare")):
+        return MediaError(T.SERVICES_YTDLP_BLOCKED, code="source_blocked")
+    if any(word in text for word in ("private", "login required", "log in", "sign in", "cookies", "age-restricted")):
         return MediaError(T.SERVICES_YTDLP_RESTRICTED, code="authentication")
+    if any(word in text for word in ("max-filesize", "larger than max", "file is larger")):
+        return MediaError(T.SERVICES_YTDLP_DOWNLOAD_TOO_LARGE, code="file_too_large")
+    if "requested format" in text or "no video formats" in text:
+        return MediaError(T.SERVICES_YTDLP_FORMAT_UNAVAILABLE, code="format_unavailable")
     if any(word in text for word in ("not available", "has been removed", "does not exist", "404", "unavailable")):
         return MediaError(T.SERVICES_YTDLP_UNAVAILABLE, code="unavailable")
-    if any(word in text for word in ("timed out", "429", "502", "503", "temporary", "resolve", "connection")):
-        return MediaError(T.SERVICES_YTDLP_SOURCE_UNAVAILABLE, code="source_temporary", retryable=True)
     return MediaError(T.SERVICES_YTDLP_DOWNLOAD_FAILED, code="extractor_failed")
 
 

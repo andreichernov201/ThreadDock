@@ -59,6 +59,8 @@ PLATFORM_HOSTS = {
     "VK": {"vk.com", "www.vk.com", "m.vk.com", "vkvideo.ru", "www.vkvideo.ru", "m.vkvideo.ru"},
     "X": {"x.com", "www.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com"},
     "Vimeo": {"vimeo.com", "www.vimeo.com"},
+    "Reddit": {"reddit.com", "www.reddit.com", "old.reddit.com", "m.reddit.com", "redd.it", "v.redd.it"},
+    "Pinterest": {"pinterest.com", "www.pinterest.com", "pinterest.ru", "www.pinterest.ru", "pin.it"},
 }
 _URL_PATTERN = re.compile(r"\b(?:https?://|www\.)[^\s<>\"'«»]+", re.IGNORECASE)
 _TRACKING_PARAMS = {"si", "feature", "fbclid", "igsh", "igshid", "gclid"}

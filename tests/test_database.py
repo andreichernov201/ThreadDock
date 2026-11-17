@@ -7,6 +7,57 @@ from tests.support import DatabaseFixture
 
 
 class DatabaseTests(DatabaseFixture, unittest.TestCase):
+    def test_pending_same_video_in_one_chat_is_deduplicated(self):
+        first = self.job()
+        self.assertEqual(
+            self.database.enqueue([("different-message", first.url, first.cache_key)], first.destination, "video", 100),
+            0,
+        )
+
+    def test_success_cancels_legacy_duplicates_but_preserves_other_chats_and_modes(self):
+        first = self.job()
+        # Older releases admitted one job per click, with independent request keys.
+        self.database.connection.execute(
+            """INSERT INTO jobs(request_key,url,cache_key,chat_id,message_id,requester_id,mode,created_at,updated_at)
+            SELECT 'legacy-duplicate',url,cache_key,chat_id,message_id,requester_id,mode,created_at,updated_at FROM jobs WHERE id=?""",
+            (first.id,),
+        )
+        self.database.connection.commit()
+        self.database.enqueue([("other-chat", first.url, first.cache_key)], Destination(11, 1, 20), "video", 100)
+        self.database.enqueue([("audio", first.url, first.cache_key)], first.destination, "audio", 100)
+        self.database.complete_job(first.id)
+        duplicate = self.database.connection.execute(
+            "SELECT * FROM jobs WHERE request_key='legacy-duplicate'"
+        ).fetchone()
+        self.assertEqual(duplicate["status"], "cancelled")
+        other, audio = self.database.claim(), self.database.claim()
+        self.assertEqual(other.destination.chat_id, 11)
+        self.assertEqual(audio.mode, "audio")
+
+    def test_retry_button_does_not_resurrect_completed_or_permanent_failure(self):
+        job = self.job()
+        self.database.status(job.id, "failed", "unavailable")
+        self.assertFalse(self.database.retry_job(job.id, job.attempts, 100))
+        self.database.offer_retry(job.id)
+        self.assertTrue(self.database.retry_job(job.id, job.attempts, 100))
+        self.assertFalse(self.database.retry_job(job.id, job.attempts, 100))
+        retry = self.database.claim()
+        self.database.status(retry.id, "failed", "source_temporary")
+        self.database.offer_retry(retry.id)
+        self.assertFalse(self.database.retry_job(job.id, job.attempts, 100))
+
+    def test_restart_discards_backlog_delivered_before_restart(self):
+        job = self.job()
+        self.database.connection.execute(
+            """INSERT INTO jobs(request_key,url,cache_key,chat_id,message_id,requester_id,mode,created_at,updated_at)
+            SELECT 'old-queue',url,cache_key,chat_id,message_id,requester_id,mode,created_at,updated_at FROM jobs WHERE id=?""",
+            (job.id,),
+        )
+        self.database.connection.commit()
+        self.database.status(job.id, "done")
+        self.database.recover()
+        self.assertIsNone(self.database.claim())
+
     def test_message_deduplication(self):
         destination = Destination(1, 2, 3)
         requests = [("one", "https://youtu.be/abc", "key")]

@@ -39,6 +39,18 @@ class JobTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         await self.queue._process(job)
         self.assertEqual(self.database.get_job(job.id)["status"], "failed")
         self.delivery.text.assert_awaited_once()
+        self.assertIsNone(self.delivery.text.call_args.args[2])
+
+    async def test_exhausted_transient_failure_offers_scoped_retry(self):
+        from dataclasses import replace
+
+        job = self.job()
+        job = replace(job, attempts=self.settings.retries + 1)
+        self.pipeline.fetch.side_effect = MediaError("Temporary", code="source_temporary", retryable=True)
+        await self.queue._process(job)
+        markup = self.delivery.text.call_args.args[2]
+        self.assertEqual(markup.inline_keyboard[0][0].callback_data, f"r:{job.id}:{job.attempts}")
+        self.assertTrue(self.database.get_job(job.id)["retryable"])
 
     async def test_network_failure_during_delivery_is_not_replayed(self):
         job = self.job()
@@ -48,6 +60,7 @@ class JobTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         await self.queue._process(job)
         self.assertEqual(self.database.get_job(job.id)["status"], "uncertain")
         self.assertIsNone(self.database.claim())
+        self.assertIsNone(self.delivery.text.call_args.args[2])
 
     async def test_telegram_rate_limit_schedules_instead_of_failing(self):
         job = self.job()
@@ -84,4 +97,4 @@ class JobTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         self.pipeline.fetch.side_effect = MediaError("Temporary", code="network", retryable=True)
         await self.queue._process(job)
         keyboard = self.delivery.text.call_args.args[2]
-        self.assertEqual(keyboard.inline_keyboard[0][0].callback_data, f"m:{job.id}:photos")
+        self.assertEqual(keyboard.inline_keyboard[0][0].callback_data, f"r:{job.id}:{job.attempts}")

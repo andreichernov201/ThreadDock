@@ -52,6 +52,29 @@ class ArchiveRepository:
                 row[field] = json.loads(row[field])
         return row
 
+    def author_excluded(self, sender_id: int | None) -> bool:
+        return (
+            sender_id is not None
+            and self.db.execute("SELECT 1 FROM archive_author_optouts WHERE sender_id=?", (sender_id,)).fetchone()
+            is not None
+        )
+
+    def set_author_optout(self, sender_id: int, excluded: bool) -> set[int]:
+        """Global author policy, independent of the archive owner's preferences."""
+        with self.db:
+            if not excluded:
+                self.db.execute("DELETE FROM archive_author_optouts WHERE sender_id=?", (sender_id,))
+                return set()
+            self.db.execute("INSERT OR IGNORE INTO archive_author_optouts VALUES (?,?)", (sender_id, time.time()))
+            owners = {
+                row[0]
+                for row in self.db.execute(
+                    "SELECT DISTINCT owner_id FROM archive_messages WHERE sender_id=?", (sender_id,)
+                )
+            }
+            self.db.execute("DELETE FROM archive_messages WHERE sender_id=?", (sender_id,))
+        return owners
+
     def public_owner(self, owner_id: int) -> dict:
         row = self.owner(owner_id)
         if row is None:
@@ -210,9 +233,10 @@ class ArchiveRepository:
         sender_id: int | None,
         media_group: str | None,
         payload: dict,
+        captured_from_reply: bool = False,
     ) -> int | None:
         owner = self.owner(owner_id)
-        if not owner or not owner["enabled"] or owner["paused"]:
+        if not owner or not owner["enabled"] or owner["paused"] or self.author_excluded(sender_id):
             return None
         body = payload["body"]
         snapshot = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -300,6 +324,16 @@ class ArchiveRepository:
                 f"version:{version_id}",
                 version=version_id,
             )
+            if old is None and captured_from_reply and payload["media"]:
+                self._event(
+                    owner_id,
+                    chat["id"],
+                    message_id,
+                    "reply_media",
+                    now,
+                    f"reply_media:{message_id}",
+                    version=version_id,
+                )
             for item in payload["media"]:
                 identifier = uuid.uuid4().hex
                 cursor = self.db.execute(
@@ -318,7 +352,7 @@ class ArchiveRepository:
                         now,
                     ),
                 )
-                if cursor.rowcount and not payload["protected"] and item["kind"] in owner["media_types"]:
+                if cursor.rowcount and item["kind"] in owner["media_types"]:
                     self._enqueue(owner_id, "media", {"media_id": identifier}, f"media:{identifier}")
             if is_edit:
                 self._enqueue(owner_id, "sync_copies", {"message_id": message_id}, f"sync:{version_id}")
@@ -366,6 +400,8 @@ class ArchiveRepository:
                 if row and row["deleted_at"]:
                     continue
                 if row is None:
+                    if self.author_excluded(source_chat_id):
+                        continue
                     cursor = self.db.execute(
                         "INSERT INTO archive_messages(owner_id,chat_id,telegram_id,sent_at,outgoing,deleted_at) VALUES (?,?,?,?,0,?)",
                         (owner_id, chat["id"], telegram_id, now, now),
@@ -431,31 +467,55 @@ class ArchiveRepository:
         where = "e.owner_id=? AND (?=0 OR e.id<?) AND (?=0 OR e.chat_id=?)"
         values = [owner_id, cursor, cursor, chat_id, chat_id]
         if kind == "favorites":
-            where += " AND m.favorite=1"
+            where += " AND m.favorite=1 AND e.kind!='new'"
+        elif kind == "all":
+            where += " AND e.kind!='new'"
         elif kind != "all":
-            if kind not in {"new", "edited", "deleted", "keyword", "profile"}:
+            if kind not in {"new", "edited", "deleted", "keyword", "profile", "reply_media"}:
                 raise ValueError(T.ARCHIVE_REPOSITORY_UNKNOWN_EVENT_FILTER)
             where += " AND e.kind IN ('deleted','unknown_deleted')" if kind == "deleted" else " AND e.kind=?"
             if kind != "deleted":
                 values.append(kind)
         rows = self.db.execute(
-            f"SELECT e.*,c.title AS chat_title,c.username,m.body,m.favorite,m.outgoing FROM archive_events e JOIN archive_chats c ON c.id=e.chat_id LEFT JOIN archive_messages m ON m.id=e.message_id WHERE {where} ORDER BY e.id DESC LIMIT ?",
+            f"SELECT e.*,c.title AS chat_title,c.username,coalesce(v.body,m.body) AS body,m.favorite,m.outgoing FROM archive_events e JOIN archive_chats c ON c.id=e.chat_id LEFT JOIN archive_messages m ON m.id=e.message_id LEFT JOIN archive_versions v ON v.id=e.version_id WHERE {where} ORDER BY e.id DESC LIMIT ?",
             (*values, limit + 1),
         ).fetchall()
         items = [{**dict(row), "payload": json.loads(row["payload"])} for row in rows[:limit]]
         return {"items": items, "next_cursor": items[-1]["id"] if len(rows) > limit else None}
 
-    def search(self, owner_id: int, query: str, *, chat_id: int = 0, cursor: int = 0, limit: int = 50) -> dict:
+    def search(
+        self,
+        owner_id: int,
+        query: str,
+        *,
+        chat_id: int = 0,
+        cursor: int = 0,
+        limit: int = 50,
+        mode: str = "all",
+        events_only: bool = False,
+    ) -> dict:
         words = re.findall(r"\w+", query[:200], re.UNICODE)[:12]
         if not words:
             return {"items": [], "next_cursor": None}
         match = " AND ".join('"' + word + '"*' for word in words)
+        conditions = {
+            "all": "1",
+            "deleted": "m.deleted_at IS NOT NULL",
+            "edited": "m.edited_at IS NOT NULL",
+            "favorites": "m.favorite=1",
+            "keyword": "EXISTS(SELECT 1 FROM archive_events e WHERE e.message_id=m.id AND e.kind='keyword')",
+        }
+        if mode not in conditions:
+            raise ValueError(T.ARCHIVE_REPOSITORY_UNKNOWN_MESSAGE_FILTER)
+        where = conditions[mode]
+        if events_only:
+            where += " AND EXISTS(SELECT 1 FROM archive_events e WHERE e.message_id=m.id AND e.kind!='new')"
         rows = self.db.execute(
-            """SELECT m.*,c.title AS chat_title,v.body AS match_text FROM archive_messages m
+            f"""SELECT m.*,c.title AS chat_title,v.body AS match_text FROM archive_messages m
             JOIN archive_chats c ON c.id=m.chat_id JOIN archive_versions v ON v.id=(
               SELECT max(s.rowid) FROM archive_search s WHERE archive_search MATCH ?
               AND s.owner_id=? AND s.message_id=m.id)
-            WHERE m.owner_id=? AND (?=0 OR m.chat_id=?) AND (?=0 OR m.id<?)
+            WHERE m.owner_id=? AND (?=0 OR m.chat_id=?) AND (?=0 OR m.id<?) AND ({where})
             ORDER BY m.id DESC LIMIT ?""",
             (match, owner_id, owner_id, chat_id, chat_id, cursor, cursor, limit + 1),
         ).fetchall()
@@ -525,7 +585,7 @@ class ArchiveRepository:
     def claim(self) -> dict | None:
         with self.db:
             row = self.db.execute(
-                "SELECT * FROM archive_tasks WHERE status='pending' AND available_at<=? ORDER BY id LIMIT 1",
+                "SELECT * FROM archive_tasks WHERE status='pending' AND available_at<=? ORDER BY CASE kind WHEN 'media' THEN 0 WHEN 'notify' THEN 1 ELSE 2 END,id LIMIT 1",
                 (time.time(),),
             ).fetchone()
             if row is None:

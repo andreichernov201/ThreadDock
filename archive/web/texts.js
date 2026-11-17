@@ -1,11 +1,22 @@
 // User-facing Mini App copy and HTML templates.
 // {{0}}, {{1}}, ... are already escaped values supplied by the rendering code.
 export const COPY = {
+  "REPLY_MEDIA": "Вложение из ответа",
+  "LOCK_APP": "Заблокировать",
+  "ARCHIVE_DESCRIPTION": "Удалённые и изменённые сообщения",
+  "PROTECTED_FILE": "Защищённое вложение",
+  "DELETE_RECORD": "Удалить из архива",
+  "TRIGGERS_HELP": "Когда приходят уведомления",
+  "TRIGGERS_DESCRIPTION":
+    "Удаление — Telegram сообщил, что сообщение удалили. Правка — изменились текст или вложение. Ключевое слово — совпало слово из списка во входящем сообщении. Обычные сообщения не вызывают уведомлений. Слова-исключения отключают только совпадения, а не сохранение. /optout в боте запрещает сохранять сообщения автора во всех архивах.",
+  "REPLY_MEDIA_HELP":
+    "Одноразовые вложения: ответь на сообщение до открытия. Если Telegram передаст вложение боту, он попробует сохранить файл. После исчезновения восстановить его нельзя.",
+
   "OPEN_THIS_APP_USING_THE_BUTTON_IN_THREADDOCK":
     "Открой приложение кнопкой в боте ThreadDock.",
-  "SECURE_TELEGRAM_SIGN_IN": "Безопасный вход через Telegram",
+  "SECURE_TELEGRAM_SIGN_IN": "Вход через Telegram",
   "VIEW_DEMO": "Посмотреть демонстрацию",
-  "YOUR_ARCHIVE_IS_LOCKED": "Архив защищён",
+  "YOUR_ARCHIVE_IS_LOCKED": "Архив заблокирован",
   "ENTER_YOUR_PIN_TO_CONTINUE": "Введи PIN, чтобы продолжить.",
   "UNLOCK": "Разблокировать",
   "USE_BIOMETRICS": "Войти по биометрии",
@@ -14,14 +25,7 @@ export const COPY = {
   "MEDIA": "Медиа",
   "STATISTICS": "Статистика",
   "SETTINGS": "Настройки",
-  "ARCHIVE": "АРХИВ",
-  "KEEP_THE_MOMENTS_THAT_MATTER": "События, которые не потеряются",
-  "CHATS_OVERLINE": "ПЕРЕПИСКИ",
-  "MEDIA_OVERLINE": "МЕДИА",
-  "STATS_OVERLINE": "ОБЗОР",
-  "SETTINGS_OVERLINE": "ТВОЁ ПРОСТРАНСТВО",
-  "YOUR_HISTORY_IN_ITS_PLACE": "Твоя история — на своём месте.",
-  "OWNER_ISOLATION": "Только твои переписки. Отдельный доступ для каждого.",
+  "ARCHIVE": "Архив",
   "YOUR_ARCHIVE": "Твой архив",
   "DEMO_BANNER":
     '<div class="demo-banner"><b>ДЕМОНСТРАЦИЯ</b> · Вымышленные данные. Настоящие переписки не подключены.</div>',
@@ -29,10 +33,8 @@ export const COPY = {
   "EXPORT": "Экспорт",
   "OWNER_ACCESS": "Отдельный доступ по владельцу",
   "SAVED_SINCE_CONNECTION": "Сохранено с момента подключения",
-  "SHELL_TEMPLATE":
-    '<div class="shell"><aside class="sidebar"><div class="brand"><span class="brand-symbol">t<span>·</span></span>ThreadDock</div><div class="nav-label">{{0}}</div><nav class="nav">{{1}}</nav><div class="side-note"><span class="dot"></span>{{2}}<br>{{3}}</div><div class="user"><div class="avatar">{{4}}</div><div>{{5}}<small>Личный архив</small></div><button class="icon-button" data-action="lock" aria-label="{{6}}">{{7}}</button></div></aside><main class="main">{{8}}<header class="topbar"><div><div class="eyebrow">THREADDOCK / {{9}}</div><h1>{{10}}</h1><p class="subtitle">{{11}}</p></div><div class="top-actions"><button class="icon-button" data-action="refresh" aria-label="{{12}}">{{13}}</button><button class="button" data-action="export">{{14}}<span class="desktop-label">{{15}}</span></button></div></header>{{16}}{{17}}<footer class="app-footer"><span>ThreadDock · {{18}}</span><span>{{19}}</span></footer></main><nav class="bottom-nav">{{20}}</nav></div>',
   "ARCHIVE_PAUSED": "Архив на паузе",
-  "CONNECT_YOUR_HISTORY": "Подключи свою историю",
+  "CONNECT_YOUR_HISTORY": "Архив выключен",
   "PAUSED_DESCRIPTION":
     "Новые сообщения не сохраняются. Уже сохранённое остаётся доступно.",
   "ENABLE_DESCRIPTION":
@@ -43,21 +45,16 @@ export const COPY = {
   "EDITED": "Изменено",
   "FAVORITES": "Избранное",
   "IN_THE_LAST_30_DAYS": "за последние 30 дней",
-  "YOUR_CONVERSATIONS": "Переписки под рукой",
-  "FIND_A_CHAT": "Найти собеседника",
   "NO_MESSAGES": "Нет сохранённых сообщений",
-  "CHATLIST_TEMPLATE": '<span class="badge">исключён</span>',
-  "EMPTY_CHATS":
-    '<div class="empty"><p>Переписки появятся после подключения.</p></div>',
   "ALL": "Все",
   "DELETIONS": "Удаления",
   "EDITS": "Правки",
-  "ALL_EVENTS": "Все события",
+  "ALL_EVENTS": "Все",
   "KEYWORDS": "Ключевые слова",
   "SEARCH_YOUR_ARCHIVE": "Поиск по архиву",
   "NOTHING_HERE_YET": "Нет событий",
   "EVENTS_APPEAR_AFTER_THE_BOT_RECEIVES_MESSAGES_FROM_CONNECTED_CHATS":
-    "Они появятся, когда бот получит сообщения из подключённых переписок.",
+    "Здесь появятся удаления и правки сообщений, полученных после включения архива.",
   "LOAD_MORE": "Загрузить ещё",
   "MESSAGE_EDITED": "Сообщение изменено",
   "MESSAGE_DELETED": "Сообщение удалено",
@@ -69,18 +66,14 @@ export const COPY = {
   "UNKNOWN_MESSAGE": "Бот не успел получить содержимое сообщения.",
   "PROFILE_UPDATE": "Обновлены имя или username собеседника.",
   "SERVICE_MESSAGE": "Медиа или служебное сообщение",
-  "OPEN_CHAT": "Открыть переписку",
+  "OPEN_CHAT": "События переписки",
   "VERSION_HISTORY": "История версий",
   "EVENT_FEED": "Личная лента событий",
-  "RENDERFEED_TEMPLATE":
-    '<button class="new-events" data-action="refresh">Есть новые события · {{0}}</button>',
   "NO_RESULTS": "Ничего не найдено",
   "TRY_ANOTHER_WORD_OR_FILTER": "Попробуй другое слово или фильтр.",
   "MEDIA_FILE": "Медиафайл",
   "REPLY": "Ответить",
   "MESSAGE_UNIT": " сообщений",
-  "RENDERCHAT_TEMPLATE":
-    '<div class="workspace">{{0}}<section class="panel"><div class="panel-header"><button class="icon-button mobile-back" data-action="chat-back">{{1}}</button><div class="chat-header"><div class="avatar">{{2}}</div><div><h2>{{3}}</h2><p>{{4}}</p></div></div><button class="icon-button" data-action="chat-settings">{{5}}</button></div>{{6}}{{7}}<div class="conversation">{{8}}</div><form class="composer" id="reply-form">{{9}}<label class="sr-only" for="reply-text">{{10}}</label><textarea id="reply-text" name="text" rows="2" placeholder="Ответ собеседнику от твоего имени…" maxlength="4096"></textarea><div class="composer-footer"><input name="file" type="file" aria-label="Прикрепить файл"><button class="button primary" type="submit">{{11}}{{12}}</button></div><p class="reply-note">Ответ отправляется через твоё Business-подключение. Доступен в течение 24 часов после входящего.</p></form></section></div>',
   "SAVED": "Сохранено",
   "IN_TELEGRAM": "В Telegram",
   "SEND_TO_TELEGRAM": "Получить в Telegram",
@@ -155,7 +148,7 @@ export const COPY = {
   "OPERATOR_CARD":
     '<section class="panel setting-card"><h2>Оператор</h2><p class="description">Состояние служб и коды ошибок, без чужих переписок.</p><button class="button" data-action="operator">Состояние инстанса</button></section>',
   "RENDERSETTINGS_TEMPLATE_2":
-    '<div class="settings-grid"><form class="panel setting-card" id="storage-form"><h2>{{0}}</h2><p class="description">Сохраняются разрешённые переписки, которые бот получает после подключения. История до подключения недоступна.</p><div class="status-line"><span class="status-light {{1}}"></span>{{2}}</div>{{3}}{{4}}<label class="consent"><input type="checkbox" name="consent" {{5}}>Подтверждаю сохранение доступных боту переписок на сервере ThreadDock. Каждый пользователь видит только свои данные.</label><label class="setting-row"><span>{{6}}<small>Избранное не удаляется автоматически.</small></span><select name="retention_days">{{7}}</select></label>{{8}}<label class="setting-row"><span>{{9}}<small>Нужно отдельное право Telegram.</small></span><select name="read_mode">{{10}}</select></label><div class="setting-footer"><button class="button primary">{{11}}</button></div></form><form class="panel setting-card" id="notification-form"><h2>{{12}}</h2><p class="description">Бот сообщает о событиях в личном чате. Серии удалений объединяются, текст по умолчанию скрыт.</p>{{13}}{{14}}{{15}}{{16}}{{17}}{{18}}<div class="two-fields"><label class="field">Тишина с<input type="time" name="quiet_start" value="{{19}}"></label><label class="field">До<input type="time" name="quiet_end" value="{{20}}"></label></div><label class="field">Смещение часового пояса, минут<input type="number" min="-840" max="840" name="utc_offset" value="{{21}}"></label><div class="setting-footer"><button class="button primary">{{22}}</button></div></form><form class="panel setting-card" id="keyword-form"><h2>{{23}}</h2><p class="description">Пиши слова через запятую. Исключение отменяет срабатывание для всего сообщения.</p><label class="field">Отслеживать<textarea name="keywords">{{24}}</textarea></label><label class="field">Слова-исключения<textarea name="exclusions">{{25}}</textarea></label>{{26}}<div class="setting-footer"><button class="button primary">{{27}}</button></div></form><section class="panel setting-card"><h2>{{28}}</h2><p class="description">PIN блокирует приложение и API. Биометрия хранит ключ в защищённом хранилище Telegram. Это не сквозное шифрование базы.</p><label class="setting-row"><span>{{29}}</span><select id="language"><option value="ru" {{30}}>Русский</option><option value="en" {{31}}>English</option></select></label><label class="setting-row"><span>{{32}}</span><select id="theme">{{33}}</select></label><label class="setting-row"><span>{{34}}</span><select id="auto-lock">{{35}}</select></label><div class="setting-footer"><button class="button" data-action="pin">{{36}}{{37}}</button><button class="button subtle" data-action="enroll-bio">{{38}}</button></div></section><section class="panel setting-card"><h2>{{39}}</h2><p class="description">Личная закрытая группа с темами: только ты и бот. Файлы копируются по file_id, даже если они слишком большие для просмотра в приложении. У каждого собеседника своя тема.</p><div class="status-line"><span class="status-light {{40}}"></span>{{41}}</div><div class="setting-footer"><button class="button" data-action="vault-request">{{42}}</button><button class="button subtle" data-action="vault-id">По ID</button></div></section><section class="panel setting-card danger-card"><h2>{{43}}</h2><p class="description">Экспорт доступен в JSON, CSV, Markdown и HTML. Удаление стирает базу, версии и локальные файлы. Копии в Telegram-группе удаляются отдельно через сам Telegram.</p><div class="setting-footer"><button class="button" data-action="export">{{44}}</button><button class="button danger" data-action="delete-all">{{45}}</button></div></section>{{46}}</div>',
+    '<div class="settings-grid"><form class="panel setting-card" id="storage-form"><h2>{{0}}</h2><p class="description">Сохраняются разрешённые переписки, которые бот получает после подключения. История до подключения недоступна.</p><div class="status-line"><span class="status-light {{1}}"></span>{{2}}</div>{{3}}{{4}}<label class="consent"><input type="checkbox" name="consent" {{5}}>Подтверждаю сохранение доступных боту переписок на сервере ThreadDock. Каждый пользователь видит только свои данные.</label><label class="setting-row"><span>{{6}}<small>Избранное не удаляется автоматически.</small></span><select name="retention_days">{{7}}</select></label>{{8}}<label class="setting-row"><span>{{9}}<small>Нужно отдельное право Telegram.</small></span><select name="read_mode">{{10}}</select></label><div class="setting-footer"><button class="button primary">{{11}}</button></div></form><form class="panel setting-card" id="notification-form"><h2>{{12}}</h2><p class="description">Бот сообщает о событиях в личном чате. Серии удалений объединяются, текст по умолчанию скрыт.</p>{{13}}{{14}}{{15}}{{16}}{{17}}{{18}}<div class="two-fields"><label class="field">Тишина с<input type="time" name="quiet_start" value="{{19}}"></label><label class="field">До<input type="time" name="quiet_end" value="{{20}}"></label></div><label class="field">Смещение часового пояса, минут<input type="number" min="-840" max="840" name="utc_offset" value="{{21}}"></label><div class="setting-footer"><button class="button primary">{{22}}</button></div></form><form class="panel setting-card" id="keyword-form"><h2>{{23}}</h2><p class="description">Пиши слова через запятую. Исключение отменяет срабатывание для всего сообщения.</p><label class="field">Отслеживать<textarea name="keywords">{{24}}</textarea></label><label class="field">Слова-исключения<textarea name="exclusions">{{25}}</textarea></label>{{26}}<div class="setting-footer"><button class="button primary">{{27}}</button></div></form><section class="panel setting-card"><h2>{{28}}</h2><p class="description">PIN блокирует приложение и API. Биометрия хранит ключ в защищённом хранилище Telegram. Это не сквозное шифрование базы.</p><label class="setting-row"><span>{{29}}</span><select id="language"><option value="ru" {{30}}>Русский</option><option value="en" {{31}}>English</option></select></label><label class="setting-row"><span>{{32}}</span><select id="theme">{{33}}</select></label><label class="setting-row"><span>{{34}}</span><select id="auto-lock">{{35}}</select></label><div class="setting-footer"><button class="button" data-action="pin">{{36}}{{37}}</button><button class="button subtle" data-action="enroll-bio">{{38}}</button></div></section><section class="panel setting-card"><h2>{{39}}</h2><p class="description">Личная закрытая группа с темами: только ты и бот. Здесь сохраняются файлы, в том числе слишком большие для просмотра в приложении. У каждого собеседника своя тема.</p><div class="status-line"><span class="status-light {{40}}"></span>{{41}}</div><div class="setting-footer"><button class="button" data-action="vault-request">{{42}}</button><button class="button subtle" data-action="vault-id">По ID</button></div></section><section class="panel setting-card danger-card"><h2>{{43}}</h2><p class="description">Экспорт доступен в JSON, CSV, Markdown и HTML. Удаление стирает базу, версии и локальные файлы. Копии в Telegram-группе удаляются отдельно через сам Telegram.</p><div class="setting-footer"><button class="button" data-action="export">{{44}}</button><button class="button danger" data-action="delete-all">{{45}}</button></div></section>{{46}}</div>',
   "CLOSE": "Закрыть",
   "ORIGINAL": "Оригинал",
   "VERSION_PREFIX": "Версия ",
@@ -251,8 +244,8 @@ export const translations = {
   "Статистика": "Statistics",
   "Настройки": "Settings",
   "АРХИВ": "ARCHIVE",
-  "Твоя история — на своём месте.": "Your history, in its place.",
-  "События, которые не потеряются": "Keep the moments that matter",
+  "Удалённые и изменённые сообщения": "Your history, in its place.",
+  "Архив": "Keep the moments that matter",
   "Экспорт": "Export",
   "Поиск по архиву": "Search your archive",
   "Всего сообщений": "Messages",
@@ -276,7 +269,7 @@ export const translations = {
   "Ключевое слово": "Keyword match",
   "Изменён профиль": "Profile changed",
   "Нет событий": "Nothing here yet",
-  "Они появятся, когда бот получит сообщения из подключённых переписок.":
+  "Здесь появятся удаления и правки сообщений, полученных после включения архива.":
     "Events appear after the bot receives messages from connected chats.",
   "Загрузить ещё": "Load more",
   "Ничего не найдено": "No results",

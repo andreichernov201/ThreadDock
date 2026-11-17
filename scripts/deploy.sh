@@ -39,12 +39,16 @@ if [[ -n "$public_host" ]]; then
     -v "$base/shared:/config" "$image" python scripts/configure_web.py /config/.env "$public_host"
 fi
 compose=(docker compose -p threaddock --env-file "$base/shared/.env" --env-file "$release/image.env" -f "$release/compose.production.yaml")
-if [[ -f "$base/shared/web.enabled" ]]; then compose+=(--profile web); fi
+web_enabled=false
+if [[ -f "$base/shared/web.enabled" ]] || grep -Eq '^ARCHIVE_DOMAIN=[^[:space:]#]+' "$base/shared/.env"; then
+  web_enabled=true
+  compose+=(--profile web)
+fi
 "${compose[@]}" config --quiet
 docker run --rm --env-file "$base/shared/.env" --read-only \
   --tmpfs /tmp:size=128m,mode=1777 --cap-drop ALL --security-opt no-new-privileges:true \
   "$image" python main.py --check
-if [[ -f "$base/shared/web.enabled" ]]; then "${compose[@]}" pull caddy; fi
+if [[ "$web_enabled" == true ]]; then "${compose[@]}" pull caddy; fi
 
 old_release=$(readlink -f "$base/current" 2>/dev/null || true)
 docker volume create threaddock_threaddock-data >/dev/null
@@ -85,6 +89,7 @@ if [[ -f "$base/shared/web.enabled" && -f "$base/shared/web-origin" ]]; then
     printf '%s\n' 'The bot is healthy, but archive HTTPS is not reachable yet. Check ports 80/443 and DNS.' >&2
     exit 1
   fi
+  "${compose[@]}" exec -T bot python scripts/check_web.py
   printf '\nArchive: %s\n' "$public_url"
 fi
 

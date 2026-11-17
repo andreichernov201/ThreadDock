@@ -328,6 +328,8 @@ def create_web_app(service) -> web.Application:
                 request.query.get("q", ""),
                 chat_id=number(request, "chat"),
                 cursor=number(request, "cursor"),
+                mode=request.query.get("kind", "all"),
+                events_only=True,
             )
         )
 
@@ -416,8 +418,14 @@ def create_web_app(service) -> web.Application:
         media = repository.media(request["owner"]["owner_id"], request.match_info["id"])
         if media is None:
             raise LookupError()
-        if media["protected"] or not media["local_path"]:
-            return web.json_response({"error": T.ARCHIVE_WEB_REMOTE_MEDIA, "code": "remote_media"}, status=409)
+        if not media["local_path"]:
+            return web.json_response(
+                {
+                    "error": T.ARCHIVE_WEB_PROTECTED_MEDIA if media["protected"] else T.ARCHIVE_WEB_REMOTE_MEDIA,
+                    "code": "protected_media" if media["protected"] else "remote_media",
+                },
+                status=409,
+            )
         path = service.safe_path(media["local_path"], service.blobs)
         if not path.is_file():
             raise LookupError()
@@ -458,8 +466,11 @@ def create_web_app(service) -> web.Application:
     @routes.post("/api/media/{id:[a-f0-9]{32}}/retry")
     async def retry_media(request):
         owner, identifier = request["owner"]["owner_id"], request.match_info["id"]
-        if repository.media(owner, identifier) is None:
+        media = repository.media(owner, identifier)
+        if media is None:
             raise LookupError()
+        if media["status"] == "protected":
+            raise ValueError(T.ARCHIVE_WEB_PROTECTED_MEDIA)
         return web.json_response(
             {"task_id": repository.enqueue(owner, "media", {"media_id": identifier, "explicit": True})}, status=202
         )

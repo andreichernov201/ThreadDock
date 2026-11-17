@@ -18,7 +18,8 @@ class ArchiveSettings:
 
     @classmethod
     def from_environment(cls):
-        url = os.getenv("ARCHIVE_PUBLIC_URL", "").strip().rstrip("/")
+        domain = os.getenv("ARCHIVE_DOMAIN", "").strip()
+        url = (os.getenv("ARCHIVE_PUBLIC_URL", "").strip() or (f"https://{domain}" if domain else "")).rstrip("/")
         parts = urlsplit(url)
         if url and (
             parts.scheme != "https"
@@ -30,6 +31,8 @@ class ArchiveSettings:
             or parts.path not in {"", "/"}
         ):
             raise ValueError(T.ARCHIVE_CONFIG_HTTPS_ORIGIN_REQUIRED)
+        if domain and parts.hostname != domain:
+            raise ValueError(T.ARCHIVE_CONFIG_DOMAIN_MISMATCH)
         try:
             port = int(os.getenv("ARCHIVE_PORT", "8080"))
             storage = int(os.getenv("ARCHIVE_STORAGE_MB", "20480")) * 1024**2

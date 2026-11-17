@@ -22,6 +22,20 @@ Deno.test("Template interpolation never interprets values as placeholders", () =
   assert(fill("<p>{{0}}</p>{{1}}", "{{1}}", "safe") === "<p>{{1}}</p>safe");
 });
 
+Deno.test("Archive filters keep events within the selected conversation", async () => {
+  const api = createDemoApi();
+  const all = await api.request("/api/events?kind=all&chat=0");
+  assert(all.items.length > 0, "Unscoped feed is empty");
+  const scoped = await api.request("/api/events?kind=all&chat=1");
+  assert(scoped.items.length > 0, "Selected conversation has no events");
+  assert(
+    scoped.items.every((item) => item.chat_id === 1),
+    "Foreign conversation in scoped feed",
+  );
+  const gallery = await api.request("/api/gallery?chat=0");
+  assert(gallery.items.length > 0, "All-conversation gallery is empty");
+});
+
 Deno.test("Demonstration keeps changes in its own browser instance", async () => {
   const first = createDemoApi(), second = createDemoApi();
   const originalPaused = (await first.request("/api/session")).owner.paused;

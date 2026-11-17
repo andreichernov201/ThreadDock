@@ -15,6 +15,9 @@ CREATE TABLE IF NOT EXISTS archive_owners (
  pin_hash TEXT, pin_salt TEXT, auto_lock INTEGER NOT NULL DEFAULT 300,
  auto_delete_disconnected INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS archive_author_optouts (
+ sender_id INTEGER PRIMARY KEY, created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS archive_connection_details (
  connection_id TEXT PRIMARY KEY, owner_id INTEGER NOT NULL REFERENCES archive_owners(owner_id) ON DELETE CASCADE,
  rights TEXT NOT NULL, enabled INTEGER NOT NULL, disconnected_at REAL

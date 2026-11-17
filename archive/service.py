@@ -12,6 +12,7 @@ from pathlib import Path
 from aiogram.exceptions import (
     TelegramAPIError,
     TelegramBadRequest,
+    TelegramForbiddenError,
     TelegramNetworkError,
     TelegramRetryAfter,
     TelegramServerError,
@@ -118,6 +119,8 @@ class ArchiveService:
         for item in [message.reply_to_message, message] if message.reply_to_message else [message]:
             if item is None or item.chat.id != message.chat.id or (item.sender_business_bot and not manual_reply):
                 continue
+            if self.repository.author_excluded(item.from_user.id if item.from_user else None):
+                continue
             self.repository.ingest(
                 owner_id=owner_id,
                 connection_id=message.business_connection_id,
@@ -131,6 +134,7 @@ class ArchiveService:
                 sender_id=item.from_user.id if item.from_user else None,
                 media_group=item.media_group_id,
                 payload=message_payload(item),
+                captured_from_reply=item is message.reply_to_message,
             )
 
     async def deleted(self, event) -> None:
@@ -149,7 +153,7 @@ class ArchiveService:
                 info["owner_id"], event.business_connection_id, event.chat.id, event.message_ids, title
             )
 
-    def web_button(self, text: str = T.ARCHIVE_SERVICE_OPEN_ARCHIVE, *, chat_id: int = 0):
+    def web_button(self, text: str = T.ARCHIVE_SERVICE_OPEN_ARCHIVE, *, chat_id: int = 0, message_id: int = 0):
         if not self.config.public_url:
             return None
         return InlineKeyboardMarkup(
@@ -157,7 +161,16 @@ class ArchiveService:
                 [
                     InlineKeyboardButton(
                         text=text,
-                        web_app=WebAppInfo(url=self.config.public_url + (f"/?chat={chat_id}" if chat_id else "/")),
+                        web_app=WebAppInfo(
+                            url=self.config.public_url
+                            + (
+                                f"/?chat={chat_id}&message={message_id}"
+                                if message_id
+                                else f"/?chat={chat_id}"
+                                if chat_id
+                                else "/"
+                            )
+                        ),
                     )
                 ]
             ]
@@ -305,6 +318,7 @@ class ArchiveService:
             "unknown_deleted": T.ARCHIVE_SERVICE_UNKNOWN_DELETION,
             "keyword": T.ARCHIVE_SERVICE_KEYWORD_MATCH,
             "profile": T.ARCHIVE_SERVICE_PROFILE_CHANGED,
+            "reply_media": T.ARCHIVE_REASON_REPLY_MEDIA,
         }
         title = (
             labels.get(rows[0]["kind"], T.ARCHIVE_SERVICE_ARCHIVE_EVENT)
@@ -314,20 +328,37 @@ class ArchiveService:
         text = T.ARCHIVE_SERVICE_NOTIFICATION_HEADER.format(
             title=html.escape(title), chat=html.escape(rows[0]["title"])
         )
+        reason = {
+            "edited": T.ARCHIVE_REASON_EDITED,
+            "deleted": T.ARCHIVE_REASON_DELETED,
+            "unknown_deleted": T.ARCHIVE_REASON_UNKNOWN,
+            "keyword": T.ARCHIVE_REASON_KEYWORD,
+            "profile": T.ARCHIVE_REASON_PROFILE,
+            "reply_media": T.ARCHIVE_REASON_REPLY_MEDIA,
+        }.get(rows[0]["kind"], "")
+        if len(rows) > 1:
+            reason = T.ARCHIVE_REASON_DELETED_BATCH.format(count=len(rows))
+        if reason:
+            text += "\n" + html.escape(reason)
         if not owner["hide_content"]:
             previews = [
                 html.escape((row["body"] or "").strip()[:500] or T.ARCHIVE_SERVICE_EMPTY_PREVIEW) for row in rows[:4]
             ]
             text += "\n\n" + "\n\n".join(previews)
         if len(rows) == 1 and rows[0]["kind"] == "keyword":
-            text += "\n" + html.escape(", ".join(json.loads(rows[0]["payload"])["matches"]))
+            text += "\n" + html.escape(
+                T.ARCHIVE_REASON_MATCHES.format(words=", ".join(json.loads(rows[0]["payload"])["matches"]))
+            )
         buttons = []
         if self.config.public_url:
             buttons.append(
                 [
                     InlineKeyboardButton(
-                        text=T.ARCHIVE_SERVICE_OPEN_CHAT,
-                        web_app=WebAppInfo(url=f"{self.config.public_url}/?chat={rows[0]['chat_id']}"),
+                        text=T.ARCHIVE_SERVICE_OPEN_ARCHIVE,
+                        web_app=WebAppInfo(
+                            url=f"{self.config.public_url}/?chat={rows[0]['chat_id']}"
+                            + (f"&message={rows[0]['message_id']}" if len(rows) == 1 and rows[0]["message_id"] else "")
+                        ),
                     )
                 ]
             )
@@ -357,7 +388,7 @@ class ArchiveService:
 
     async def _save_media(self, task: dict, owner: dict):
         media = self.repository.media(owner["owner_id"], task["payload"]["media_id"])
-        if not media or media["protected"] or media["kind"] not in owner["media_types"]:
+        if not media or media["kind"] not in owner["media_types"]:
             return
         if media["size"] <= self.config.media_download_bytes and not media["local_path"]:
             stored_bytes = self.repository.db.execute(
@@ -381,6 +412,9 @@ class ArchiveService:
                             ),
                             timeout=60,
                         )
+                    # The author may have opted out while getFile was in flight.
+                    if self.repository.media(owner["owner_id"], media["id"]) is None:
+                        return
                     partial.replace(path)
                     with self.repository.db:
                         self.repository.db.execute(
@@ -392,12 +426,12 @@ class ArchiveService:
                                 media["id"],
                             ),
                         )
-                except TelegramAPIError, MediaError, OSError:
+                except TelegramBadRequest, TelegramForbiddenError, MediaError, OSError:
                     partial.unlink(missing_ok=True)
                     with self.repository.db:
                         self.repository.db.execute(
-                            "UPDATE archive_media SET status='remote' WHERE owner_id=? AND id=?",
-                            (owner["owner_id"], media["id"]),
+                            "UPDATE archive_media SET status=? WHERE owner_id=? AND id=?",
+                            ("protected" if media["protected"] else "remote", owner["owner_id"], media["id"]),
                         )
                 finally:
                     partial.unlink(missing_ok=True)
@@ -413,7 +447,7 @@ class ArchiveService:
                     "UPDATE archive_media SET status='remote' WHERE owner_id=? AND id=?",
                     (owner["owner_id"], media["id"]),
                 )
-        if owner["vault_chat_id"] and not media["vault_message_id"]:
+        if owner["vault_chat_id"] and not media["vault_message_id"] and not media["protected"]:
             await self._copy_to_vault(task, owner, media)
 
     async def _copy_to_vault(self, task: dict, owner: dict, media: dict):

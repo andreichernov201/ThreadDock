@@ -76,7 +76,7 @@ class JobQueue:
                 bundle = await self.pipeline.fetch(job.url, force=True)
                 row = self.database.get_job(job.id)
                 await self.delivery.deliver(replace(job, progress=row["progress"]), bundle)
-            self.database.status(job.id, "done")
+            self.database.complete_job(job.id)
             logger.info("job=%s completed", job.id)
         except asyncio.CancelledError:
             row = self.database.get_job(job.id)
@@ -86,7 +86,7 @@ class JobQueue:
             self.database.status(job.id, "queued", "telegram_rate_limit", delay=error.retry_after + 1)
         except TelegramNetworkError, TelegramServerError:
             self.database.status(job.id, "uncertain", "delivery_uncertain")
-            await self._notify(job, T.SERVICES_JOBS_SEND_UNCERTAIN, retry=True)
+            await self._notify(job, T.SERVICES_JOBS_SEND_UNCERTAIN)
         except (TelegramForbiddenError, TelegramBadRequest) as error:
             self.database.status(job.id, "failed", "telegram_rejected")
             logger.warning("job=%s Telegram rejected delivery type=%s", job.id, type(error).__name__)
@@ -97,6 +97,8 @@ class JobQueue:
                 self.database.status(job.id, "queued", error.code, delay=min(30, 2**job.attempts))
             else:
                 self.database.status(job.id, "failed", error.code)
+                if error.retryable:
+                    self.database.offer_retry(job.id)
                 await self._notify(job, str(error), retry=error.retryable)
             logger.warning("job=%s code=%s", job.id, error.code)
         except Exception as error:
@@ -111,7 +113,7 @@ class JobQueue:
         if retry:
             markup = InlineKeyboardMarkup(
                 inline_keyboard=[
-                    [InlineKeyboardButton(text=T.SERVICES_JOBS_RETRY, callback_data=f"m:{job.id}:{job.mode}")]
+                    [InlineKeyboardButton(text=T.SERVICES_JOBS_RETRY, callback_data=f"r:{job.id}:{job.attempts}")]
                 ]
             )
         try:

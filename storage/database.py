@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS jobs (
  requester_id INTEGER NOT NULL, thread_id INTEGER, business_id TEXT NOT NULL DEFAULT '',
  mode TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', attempts INTEGER NOT NULL DEFAULT 0,
  progress INTEGER NOT NULL DEFAULT 0, available_at REAL NOT NULL DEFAULT 0,
+ retryable INTEGER NOT NULL DEFAULT 0,
  created_at REAL NOT NULL, updated_at REAL NOT NULL, error_code TEXT
 );
 CREATE INDEX IF NOT EXISTS jobs_claim ON jobs(status, available_at, id);
@@ -62,6 +63,10 @@ class Database:
         if version > 2:
             raise RuntimeError("Database schema is newer than this application")
         self.connection.executescript(SCHEMA)
+        columns = {row[1] for row in self.connection.execute("PRAGMA table_info(jobs)")}
+        if "retryable" not in columns:
+            self.connection.execute("ALTER TABLE jobs ADD COLUMN retryable INTEGER NOT NULL DEFAULT 0")
+            self.connection.commit()
         with self.connection:
             self.connection.execute(
                 """INSERT OR IGNORE INTO telegram_cache(key,bundle,accessed_at)
@@ -90,6 +95,12 @@ class Database:
             result = self.connection.execute(
                 "UPDATE jobs SET status='uncertain',error_code='interrupted_delivery' WHERE status='sending'"
             )
+            self.connection.execute("""UPDATE jobs SET status='cancelled',retryable=0,error_code='duplicate_delivered'
+                WHERE status='queued' AND EXISTS (
+                  SELECT 1 FROM jobs delivered WHERE delivered.status='done'
+                  AND delivered.cache_key=jobs.cache_key AND delivered.chat_id=jobs.chat_id
+                  AND delivered.business_id=jobs.business_id AND delivered.mode=jobs.mode
+                  AND delivered.updated_at>=jobs.created_at)""")
             # Old callback IDs created one job per tap. Retire only those duplicate
             # actions; links sent in distinct Telegram messages remain distinct requests.
             self.connection.execute(
@@ -111,6 +122,10 @@ class Database:
                 item
                 for item in requests
                 if not self.connection.execute("SELECT 1 FROM jobs WHERE request_key=?", (item[0],)).fetchone()
+                and not self.connection.execute(
+                    "SELECT 1 FROM jobs WHERE cache_key=? AND business_id=? AND chat_id=? AND mode=? AND status IN ('queued','running','sending')",
+                    (item[2], destination.business_id, destination.chat_id, mode),
+                ).fetchone()
             ]
             count = self.connection.execute(
                 "SELECT count(*) FROM jobs WHERE status IN ('queued','running','sending')"
@@ -228,6 +243,45 @@ class Database:
 
     def get_job(self, job_id: int):
         return self.connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+
+    def offer_retry(self, job_id: int) -> None:
+        with self.connection:
+            self.connection.execute("UPDATE jobs SET retryable=1 WHERE id=? AND status='failed'", (job_id,))
+
+    def complete_job(self, job_id: int) -> None:
+        """A confirmed delivery supersedes queued retries of the same media in this chat."""
+        with self.connection:
+            row = self.get_job(job_id)
+            if row is None:
+                return
+            self.connection.execute(
+                "UPDATE jobs SET status='done',retryable=0,error_code=NULL,updated_at=? WHERE id=?",
+                (time.time(), job_id),
+            )
+            self.connection.execute(
+                """UPDATE jobs SET status='cancelled',retryable=0,error_code='duplicate_delivered',updated_at=?
+                WHERE id!=? AND cache_key=? AND chat_id=? AND business_id=? AND mode=?
+                AND status IN ('queued','failed')""",
+                (time.time(), job_id, row["cache_key"], row["chat_id"], row["business_id"], row["mode"]),
+            )
+
+    def retry_job(self, job_id: int, attempt: int, capacity: int) -> bool:
+        """Consume one failure's retry button atomically; keep delivery checkpoints."""
+        with self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
+            row = self.get_job(job_id)
+            if not row or row["status"] != "failed" or not row["retryable"] or row["attempts"] != attempt:
+                return False
+            count = self.connection.execute(
+                "SELECT count(*) FROM jobs WHERE status IN ('queued','running','sending')"
+            ).fetchone()[0]
+            if count >= capacity:
+                raise QueueFull()
+            self.connection.execute(
+                "UPDATE jobs SET status='queued',retryable=0,error_code=NULL,available_at=0,updated_at=? WHERE id=?",
+                (time.time(), job_id),
+            )
+        return True
 
     def user_counts(self, requester_id: int, chat_id: int) -> dict[str, int]:
         return {

@@ -80,6 +80,11 @@ class NormalizeUrlTests(unittest.TestCase):
             "https://vkvideo.ru/video-1_2": "VK",
             "https://twitter.com/user/status/1": "X",
             "vimeo.com/123": "Vimeo",
+            "https://www.reddit.com/r/test/comments/abc/test/": "Reddit",
+            "https://redd.it/abc": "Reddit",
+            "https://v.redd.it/abc": "Reddit",
+            "https://www.pinterest.com/pin/123/": "Pinterest",
+            "https://pin.it/abc": "Pinterest",
         }
         for url, platform in cases.items():
             with self.subTest(url=url):

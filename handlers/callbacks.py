@@ -10,9 +10,16 @@ router = Router()
 
 
 @router.callback_query(F.data.startswith("m:"))
+@router.callback_query(F.data.startswith("r:"))
 async def media_action(query: CallbackQuery, app: Application) -> None:
     parts = (query.data or "").split(":")
-    if len(parts) != 3 or not parts[1].isdigit() or parts[2] not in {"video", "photos", "audio"}:
+    if (
+        len(parts) != 3
+        or not parts[1].isdigit()
+        or not (
+            (parts[0] == "m" and parts[2] in {"video", "photos", "audio"}) or (parts[0] == "r" and parts[2].isdigit())
+        )
+    ):
         await query.answer(T.HANDLERS_CALLBACKS_INVALID_BUTTON)
         return
     row = app.database.get_job(int(parts[1]))
@@ -37,7 +44,13 @@ async def media_action(query: CallbackQuery, app: Application) -> None:
         await query.answer(T.HANDLERS_CALLBACKS_DELIVERY_UNAVAILABLE, show_alert=True)
         return
     try:
-        outcome = app.database.request_media(row["id"], parts[2], app.settings.queue_capacity)
+        if parts[0] == "r" or parts[2] == "video":
+            accepted = app.database.retry_job(
+                row["id"], int(parts[2]) if parts[0] == "r" else row["attempts"], app.settings.queue_capacity
+            )
+            outcome = "accepted" if accepted else row["status"]
+        else:
+            outcome = app.database.request_media(row["id"], parts[2], app.settings.queue_capacity)
     except MediaError as error:
         await query.answer(str(error), show_alert=True)
         return
@@ -48,5 +61,8 @@ async def media_action(query: CallbackQuery, app: Application) -> None:
         "sending": T.HANDLERS_CALLBACKS_ALREADY_RUNNING,
         "done": T.HANDLERS_CALLBACKS_ALREADY_DONE,
         "expired": T.HANDLERS_CALLBACKS_JOB_EXPIRED,
+        "failed": T.HANDLERS_CALLBACKS_ALREADY_REQUESTED,
+        "cancelled": T.HANDLERS_CALLBACKS_ALREADY_DONE,
+        "uncertain": T.HANDLERS_CALLBACKS_ALREADY_REQUESTED,
     }
     await query.answer(answers[outcome])

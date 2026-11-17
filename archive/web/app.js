@@ -65,7 +65,6 @@ const S = {
   meta: null,
   owner: null,
   lang: "ru",
-  replyTo: null,
   locked: false,
   token: "",
   csrf: "",
@@ -181,11 +180,9 @@ function toast(text) {
   toastTimer = setTimeout(() => box.classList.remove("show"), 4000);
 }
 function theme() {
-  const preference = localStorage.getItem("threaddock-theme") || "auto";
-  document.documentElement.dataset.theme = preference === "auto"
-    ? (tg?.colorScheme ||
-      (matchMedia("(prefers-color-scheme:dark)").matches ? "dark" : "light"))
-    : preference;
+  document.documentElement.dataset.theme = "dark";
+  tg?.setHeaderColor?.("#171819");
+  tg?.setBackgroundColor?.("#171819");
 }
 function clearPrivate() {
   S.epoch++;
@@ -194,7 +191,6 @@ function clearPrivate() {
   S.items = [];
   S.chats = [];
   S.stats = null;
-  S.replyTo = null;
   S.openMessage = null;
   S.owner = null;
   S.meta = null;
@@ -241,11 +237,13 @@ async function bootstrap() {
   S.owner = S.meta.owner;
   S.lang = S.owner.language;
   S.lastActivity = Date.now();
-  [S.chats, S.stats] = await Promise.all([
-    api.request("/api/chats").then((v) => v.items),
-    api.request("/api/stats?days=30"),
-  ]);
+  S.chats = (await api.request("/api/chats")).items;
   await load(false);
+  if (S.pendingMessage) {
+    const id = S.pendingMessage;
+    S.pendingMessage = 0;
+    await openMessage(id).catch(fail);
+  }
 }
 async function boot() {
   theme();
@@ -264,15 +262,19 @@ async function boot() {
     const initial = Number(new URLSearchParams(location.search).get("chat"));
     if (Number.isSafeInteger(initial) && initial > 0) {
       S.chat = initial;
-      S.view = "chats";
+      S.view = "feed";
     }
+    const focused = Number(new URLSearchParams(location.search).get("message"));
+    S.pendingMessage = Number.isSafeInteger(focused) && focused > 0
+      ? focused
+      : 0;
     await bootstrap();
   } catch (error) {
     showLogin(error.message);
   }
 }
 function navButtons() {
-  return [["feed", COPY.ACTIVITY], ["chats", COPY.CHATS], [
+  return [["feed", COPY.ARCHIVE], [
     "gallery",
     COPY.MEDIA,
   ], [
@@ -286,42 +288,34 @@ function navButtons() {
 }
 function shell(content) {
   if (S.locked || !S.owner) return;
-  const names = {
-    feed: [COPY.ARCHIVE, COPY.KEEP_THE_MOMENTS_THAT_MATTER],
-    chats: [COPY.CHATS_OVERLINE, COPY.CHATS],
-    gallery: [COPY.MEDIA_OVERLINE, COPY.MEDIA],
-    stats: [COPY.STATS_OVERLINE, COPY.STATISTICS],
-    settings: [COPY.SETTINGS_OVERLINE, COPY.SETTINGS],
-  };
-  const [over, title] = names[S.view] || names.feed;
-  root.innerHTML = fill(
-    COPY.SHELL_TEMPLATE,
-    e(t(COPY.ARCHIVE)),
-    navButtons(),
-    e(t(COPY.YOUR_HISTORY_IN_ITS_PLACE)),
-    S.lang === "en"
-      ? "Only your own conversations. No shared access."
-      : COPY.OWNER_ISOLATION,
-    e(initials(S.user?.first_name || COPY.YOUR_ARCHIVE)),
-    e(S.user?.first_name || "ThreadDock"),
-    e(t(COPY.YOUR_ARCHIVE_IS_LOCKED)),
-    icon("lock"),
-    demo ? COPY.DEMO_BANNER : "",
-    e(t(over)),
-    e(t(title)),
-    e(t(COPY.YOUR_HISTORY_IN_ITS_PLACE)),
-    e(t(COPY.REFRESH)),
-    icon("feed"),
-    icon("download"),
-    e(t(COPY.EXPORT)),
-    S.view !== "settings" ? statusBanner() : "",
-    content,
-    e(S.lang === "en" ? "Private by owner" : COPY.OWNER_ACCESS),
-    e(
-      S.lang === "en" ? "Saved after connection" : COPY.SAVED_SINCE_CONNECTION,
-    ),
-    navButtons(),
-  );
+  const title = {
+    feed: COPY.ARCHIVE,
+    chats: COPY.ARCHIVE,
+    gallery: COPY.MEDIA,
+    stats: COPY.STATISTICS,
+    settings: COPY.SETTINGS,
+  }[S.view] || COPY.ARCHIVE;
+  root.innerHTML = `<div class="shell"><aside class="sidebar">
+    <div class="brand">${icon("feed")}<span>ThreadDock</span></div>
+    <nav class="nav">${navButtons()}</nav>
+    <button class="side-lock text-button" data-action="lock">${icon("lock")}${
+    e(t(COPY.LOCK_APP))
+  }</button>
+    </aside><main class="main">${demo ? COPY.DEMO_BANNER : ""}
+    <header class="topbar"><div><h1>${e(t(title))}</h1>
+    ${
+    ["feed", "chats"].includes(S.view)
+      ? `<p class="subtitle">${e(t(COPY.ARCHIVE_DESCRIPTION))}</p>`
+      : ""
+  }</div>
+    <div class="top-actions"><button class="icon-button" data-action="refresh" aria-label="${
+    e(t(COPY.REFRESH))
+  }">${icon("feed")}</button>
+    <button class="icon-button" data-action="export" aria-label="${
+    e(t(COPY.EXPORT))
+  }">${icon("download")}</button></div></header>
+    ${S.view !== "settings" ? statusBanner() : ""}${content}</main>
+    <nav class="bottom-nav">${navButtons()}</nav></div>`;
   const sentinel = document.querySelector("#more-sentinel");
   if (sentinel && S.cursor) {
     new IntersectionObserver((entries, observer) => {
@@ -369,66 +363,42 @@ function statCards() {
     ).join("")
   }</div>`;
 }
-function chatList(directory = false) {
-  return `<section class="panel chat-panel ${
-    directory ? "chat-directory" : ""
-  }"><div class="panel-header"><h2>${
-    e(t(COPY.YOUR_CONVERSATIONS))
-  }</h2><small>${S.chats.length}</small></div><div class="chat-search"><div class="search-wrap">${
-    icon("search")
-  }<input id="chat-search" placeholder="${
-    e(t(COPY.FIND_A_CHAT))
-  }" aria-label="${
-    e(t(COPY.FIND_A_CHAT))
-  }"></div></div><div class="chat-list">${
-    S.chats.map((chat, index) =>
-      `<button class="chat-item ${
-        S.chat === chat.id ? "active" : ""
-      }" data-action="chat" data-id="${chat.id}" data-name="${
-        e(chat.title.toLowerCase())
-      }"><div class="avatar c${index % 5}">${
-        e(initials(chat.title))
-      }</div><div class="chat-content"><div class="chat-top"><strong>${
-        e(chat.title)
-      }</strong><time>${
-        time(chat.last_at)
-      }</time></div><div class="chat-preview">${
-        e(chat.preview || COPY.NO_MESSAGES)
-      }</div></div>${
-        chat.excluded
-          ? fill(COPY.CHATLIST_TEMPLATE)
-          : chat.muted
-          ? icon("bell")
-          : ""
-      }</button>`
-    ).join("") ||
-    COPY.EMPTY_CHATS
-  }</div></section>`;
-}
+
 function filterBar() {
-  const labels = S.chat
-    ? [["all", COPY.ALL], ["deleted", COPY.DELETIONS], ["edited", COPY.EDITS], [
-      "favorites",
-      COPY.FAVORITES,
-    ]]
-    : [["all", COPY.ALL_EVENTS], ["edited", COPY.EDITS], [
-      "deleted",
-      COPY.DELETIONS,
-    ], [
-      "favorites",
-      COPY.FAVORITES,
-    ], ["keyword", COPY.KEYWORDS]];
+  const labels = [
+    ["all", COPY.ALL_EVENTS],
+    ["deleted", COPY.DELETIONS],
+    ["edited", COPY.EDITS],
+    ["favorites", COPY.FAVORITES],
+    ["keyword", COPY.KEYWORDS],
+  ];
   return `<div class="filters">${
     labels.map(([key, label]) =>
       `<button class="filter ${
         S.mode === key ? "active" : ""
       }" data-action="filter" data-mode="${key}">${e(t(label))}</button>`
     ).join("")
-  }<div class="search-wrap search-global">${
+  }</div><div class="archive-search"><div class="search-wrap search-global">${
     icon("search")
-  }<input id="global-search" value="${e(S.query)}" placeholder="${
+  }
+    <input id="global-search" value="${e(S.query)}" placeholder="${
     e(t(COPY.SEARCH_YOUR_ARCHIVE))
-  }" aria-label="${e(t(COPY.SEARCH_YOUR_ARCHIVE))}"></div></div>`;
+  }" aria-label="${e(t(COPY.SEARCH_YOUR_ARCHIVE))}"></div>
+    <select id="archive-chat" aria-label="${
+    e(t(COPY.CONVERSATION))
+  }"><option value="0">${e(t(COPY.ALL_CHATS))}</option>${
+    S.chats.map((chat) =>
+      `<option value="${chat.id}" ${S.chat === chat.id ? "selected" : ""}>${
+        e(chat.title)
+      }</option>`
+    ).join("")
+  }</select>${
+    S.chat
+      ? `<button class="icon-button" data-action="chat-settings" aria-label="${
+        e(t(COPY.SETTINGS))
+      }">${icon("settings")}</button>`
+      : ""
+  }</div>`;
 }
 function empty(
   title = COPY.NOTHING_HERE_YET,
@@ -461,6 +431,7 @@ function eventFeed() {
       new: COPY.NEW_MESSAGE,
       keyword: COPY.KEYWORD_MATCH,
       profile: COPY.PROFILE_CHANGED,
+      reply_media: COPY.REPLY_MEDIA,
       search: COPY.SEARCH_RESULTS,
     }[kind];
     const glyph = {
@@ -469,6 +440,7 @@ function eventFeed() {
       unknown_deleted: "trash",
       keyword: "key",
       profile: "settings",
+      reply_media: "file",
     }[kind] || "chats";
     return `${divider}<article class="event"><div class="event-icon ${
       e(kind)
@@ -512,83 +484,20 @@ function eventFeed() {
 }
 function renderFeed() {
   shell(
-    `${statCards()}<div class="workspace">${chatList()}<section class="panel"><div class="panel-header"><h2>${
-      e(t(S.query ? COPY.SEARCH_RESULTS : COPY.ACTIVITY))
-    }</h2><small>${
-      e(S.lang === "en" ? "Your private timeline" : COPY.EVENT_FEED)
-    }</small></div>${filterBar()}${
-      S.newEvents ? fill(COPY.RENDERFEED_TEMPLATE, e(t(COPY.REFRESH))) : ""
-    }<div class="feed">${
+    `${filterBar()}<section class="archive-feed">${
+      S.newEvents
+        ? `<button class="new-events" data-action="refresh">${
+          e(t(COPY.REFRESH))
+        } · ${fmt(S.newEvents)}</button>`
+        : ""
+    }
+    <div class="feed">${
       S.items.length ? eventFeed() : empty(
         S.query ? COPY.NO_RESULTS : COPY.NOTHING_HERE_YET,
         S.query ? COPY.TRY_ANOTHER_WORD_OR_FILTER : undefined,
       )
-    }</div>${more()}</section></div>`,
+    }</div>${more()}</section>`,
   );
-}
-function renderChat() {
-  const chat = S.chats.find((item) => item.id === S.chat);
-  if (!chat) {
-    shell(`${statCards()}${chatList(true)}`);
-    return;
-  }
-  const bubbles = S.items.slice().reverse().map((item) =>
-    `<article class="bubble ${item.outgoing ? "outgoing" : ""} ${
-      item.deleted_at ? "deleted" : ""
-    }">${
-      item.deleted_at
-        ? `<div class="badge red">${e(t(COPY.DELETED))}</div>`
-        : ""
-    }<div class="bubble-text">${e(item.body || COPY.MEDIA_FILE)}</div>${
-      (item.media || []).map((media) =>
-        `<button class="button small subtle" data-action="media" data-id="${media.id}">${
-          icon(
-            media.kind === "photo"
-              ? "gallery"
-              : media.kind === "voice" || media.kind === "audio"
-              ? "audio"
-              : "file",
-          )
-        }${e(media.filename)}</button>`
-      ).join("")
-    }<div class="bubble-footer">${item.favorite ? icon("star") : ""}<time>${
-      time(item.sent_at, true)
-    }</time><button data-action="message" data-id="${item.id}">${
-      item.edited_at ? e(t(COPY.EDITED)) : "···"
-    }</button><button data-action="quote" data-id="${item.id}" aria-label="${
-      e(t(COPY.REPLY))
-    }">↩</button></div></article>`
-  ).join("");
-  shell(
-    fill(
-      COPY.RENDERCHAT_TEMPLATE,
-      chatList(),
-      icon("back"),
-      e(initials(chat.title)),
-      e(chat.title),
-      e(
-        chat.username
-          ? "@" + chat.username
-          : fmt(chat.message_count) + COPY.MESSAGE_UNIT,
-      ),
-      icon("settings"),
-      filterBar(),
-      more(),
-      S.query ? eventFeed() : (bubbles || empty()),
-      S.replyTo
-        ? `<div class="quote-preview">↩ ${
-          e(S.replyTo.body?.slice(0, 150) || COPY.MEDIA)
-        } <button type="button" data-action="unquote">×</button></div>`
-        : "",
-      e(t(COPY.REPLY)),
-      icon("send"),
-      e(t(COPY.REPLY)),
-    ),
-  );
-  const conversation = document.querySelector(".conversation");
-  if (conversation && !S.cursor) {
-    conversation.scrollTop = conversation.scrollHeight;
-  }
 }
 function renderGallery() {
   shell(
@@ -616,9 +525,13 @@ function renderGallery() {
           media.status === "ready" ? "green" : ""
         }">${
           e(t(media.status === "ready" ? COPY.SAVED : COPY.IN_TELEGRAM))
-        }</span><button class="text-button" data-action="send-media" data-id="${media.id}">${
-          e(t(COPY.SEND_TO_TELEGRAM))
-        }</button></div></article>`
+        }</span>${
+          media.protected
+            ? ""
+            : `<button class="text-button" data-action="send-media" data-id="${media.id}">${
+              e(t(COPY.SEND_TO_TELEGRAM))
+            }</button>`
+        }</div></article>`
       ).join(""),
       S.items.length ? "" : empty(
         COPY.NOTHING_HERE_YET,
@@ -741,7 +654,11 @@ function renderSettings() {
   const o = S.owner;
   const connected = S.meta.connections.some((item) => item.enabled);
   shell(
-    fill(
+    `<section class="panel trigger-help"><h2>${
+      e(t(COPY.TRIGGERS_HELP))
+    }</h2><p>${e(t(COPY.TRIGGERS_DESCRIPTION))}</p><p>${
+      e(t(COPY.REPLY_MEDIA_HELP))
+    }</p></section>` + fill(
       COPY.RENDERSETTINGS_TEMPLATE_2,
       e(t(COPY.ARCHIVING)),
       connected ? "" : "off",
@@ -804,14 +721,12 @@ function renderSettings() {
       S.lang === "ru" ? "selected" : "",
       S.lang === "en" ? "selected" : "",
       e(t(COPY.THEME)),
-      [["auto", COPY.SYSTEM], ["light", COPY.LIGHT], ["dark", COPY.DARK]].map((
+      [["dark", COPY.DARK]].map((
         [v, label],
       ) =>
-        `<option value="${v}" ${
-          (localStorage.getItem("threaddock-theme") || "auto") === v
-            ? "selected"
-            : ""
-        }>${e(t(label))}</option>`
+        `<option value="${v}" ${v === "dark" ? "selected" : ""}>${
+          e(t(label))
+        }</option>`
       ).join(""),
       e(t(COPY.AUTO_LOCK)),
       [60, 300, 900, 1800].map((v) =>
@@ -844,7 +759,6 @@ function render() {
   if (S.view === "settings") renderSettings();
   else if (S.view === "stats") renderStats();
   else if (S.view === "gallery") renderGallery();
-  else if (S.view === "chats") renderChat();
   else renderFeed();
 }
 async function load(append = false) {
@@ -866,12 +780,12 @@ async function load(append = false) {
       render();
       return;
     }
-    if (S.view === "feed") S.stats = await api.request("/api/stats?days=30");
     if (S.query) {
-      path = `/api/search?q=${encodeURIComponent(S.query)}&chat=${S.chat || 0}`;
+      path = `/api/search?q=${encodeURIComponent(S.query)}&chat=${
+        S.chat || 0
+      }&kind=${S.mode}`;
     } else if (S.view === "gallery") path = `/api/gallery?chat=${S.chat || 0}`;
-    else if (S.chat) path = `/api/chats/${S.chat}/messages?mode=${S.mode}`;
-    else path = `/api/events?kind=${S.mode}`;
+    else path = `/api/events?kind=${S.mode}&chat=${S.chat || 0}`;
     if (append && S.cursor) path += `&cursor=${encodeURIComponent(S.cursor)}`;
     const data = await api.request(path);
     S.items = append ? [...S.items, ...data.items] : data.items;
@@ -893,7 +807,6 @@ async function navigate(view) {
   S.query = "";
   S.cursor = null;
   S.items = [];
-  S.replyTo = null;
   await load();
 }
 function openModal(title, body, actions = "") {
@@ -912,15 +825,29 @@ async function openMessage(id) {
   const message = await api.request(`/api/messages/${id}`);
   S.openMessage = message;
   openModal(
-    COPY.VERSION_HISTORY,
+    COPY.DETAILS,
     `<p>${e(message.chat_title)} · ${time(message.sent_at, true)}${
       message.deleted_at ? " · " + t(COPY.DELETED) : ""
     }</p>${
+      (message.media || []).map((media) =>
+        `<button class="button media-attachment" data-action="media" data-id="${media.id}">${
+          icon("file")
+        }${e(media.filename)}<small>${
+          e(t(
+            media.status === "ready"
+              ? COPY.SAVED
+              : media.protected
+              ? COPY.PROTECTED_FILE
+              : COPY.IN_TELEGRAM,
+          ))
+        }</small></button>`
+      ).join("")
+    }${
       (message.versions || []).map((v, i) =>
         `<section class="version"><small>${
           i === 0 ? COPY.ORIGINAL : COPY.VERSION_PREFIX + (i + 1)
         } · ${time(v.changed_at, true)}</small><pre>${
-          v.diff?.length
+          i > 0 && v.diff?.length
             ? v.diff.map((part) =>
               `<${
                 part.kind === "added"
@@ -944,11 +871,9 @@ async function openMessage(id) {
       message.favorite ? "0" : "1"
     }">${icon("star")}${
       e(t(COPY.FAVORITES))
-    }</button><button class="button primary" data-action="quote" data-id="${id}">${
-      e(t(COPY.REPLY))
-    }</button><button class="button danger" data-action="delete-message" data-id="${id}">${
-      icon("trash")
-    }</button>`,
+    }</button><button class="button danger" data-action="delete-message" data-id="${id}" aria-label="${
+      e(t(COPY.DELETE_RECORD))
+    }">${icon("trash")}</button>`,
   );
 }
 function exportModal() {
@@ -1038,16 +963,20 @@ async function previewMedia(id) {
     openModal(
       media.filename,
       element,
-      `<button class="button primary" data-action="send-media" data-id="${id}">${
-        e(t(COPY.SEND_TO_TELEGRAM))
-      }</button>`,
+      media.protected
+        ? ""
+        : `<button class="button primary" data-action="send-media" data-id="${id}">${
+          e(t(COPY.SEND_TO_TELEGRAM))
+        }</button>`,
     );
   } catch (error) {
     if (S.locked || error.name === "AbortError") return;
     openModal(
       media.filename,
       `<p>${e(error.message)}</p>`,
-      fill(COPY.PREVIEWMEDIA_TEMPLATE, id, e(t(COPY.SEND_TO_TELEGRAM)), id),
+      media.protected
+        ? ""
+        : fill(COPY.PREVIEWMEDIA_TEMPLATE, id, e(t(COPY.SEND_TO_TELEGRAM)), id),
     );
   }
 }
@@ -1178,14 +1107,12 @@ document.addEventListener("click", async (event) => {
     if (action === "nav") await navigate(button.dataset.view);
     else if (action === "chat") {
       S.chat = Number(button.dataset.id);
-      S.view = "chats";
+      S.view = "feed";
       S.query = "";
       S.mode = "all";
       S.cursor = null;
-      S.replyTo = null;
       await load();
-    } else if (action === "chat-back") await navigate("chats");
-    else if (action === "filter") {
+    } else if (action === "filter") {
       S.mode = button.dataset.mode;
       S.cursor = null;
       await load();
@@ -1202,18 +1129,6 @@ document.addEventListener("click", async (event) => {
       });
       if (modal.open) modal.close();
       await load();
-    } else if (action === "quote") {
-      const record = await api.request(`/api/messages/${button.dataset.id}`);
-      S.replyTo = record;
-      S.chat = record.chat_id;
-      S.view = "chats";
-      S.query = "";
-      if (modal.open) modal.close();
-      await load();
-      document.querySelector("#reply-text")?.focus();
-    } else if (action === "unquote") {
-      S.replyTo = null;
-      render();
     } else if (action === "close-modal") modal.close();
     else if (action === "export") exportModal();
     else if (action === "pin") pinModal();
@@ -1372,7 +1287,7 @@ document.addEventListener("submit", async (event) => {
       await api.request(`/api/chats/${S.chat}`, { method: "PATCH", body });
       modal.close();
       S.chats = (await api.request("/api/chats")).items;
-      renderChat();
+      renderFeed();
     } else if (form.id === "vault-form") {
       await api.request("/api/vault", {
         method: "POST",
@@ -1408,22 +1323,6 @@ document.addEventListener("submit", async (event) => {
         await load();
         toast(COPY.DONE);
       }
-    } else if (form.id === "reply-form") {
-      if (demo) {
-        toast(COPY.DEMO_REPLY_NOTICE);
-        return;
-      }
-      if (S.replyTo) data.set("reply_to", String(S.replyTo.id));
-      const file = data.get("file");
-      if (file instanceof File && file.size === 0) data.delete("file");
-      const result = await api.request(`/api/chats/${S.chat}/reply`, {
-        method: "POST",
-        body: data,
-      });
-      S.replyTo = null;
-      form.reset();
-      toast(COPY.ADDED_TO_THE_QUEUE);
-      trackTask(result.task_id);
     }
   } catch (error) {
     fail(error);
@@ -1433,12 +1332,6 @@ document.addEventListener("submit", async (event) => {
 });
 
 document.addEventListener("input", (event) => {
-  if (event.target.id === "chat-search") {
-    const value = event.target.value.toLowerCase();
-    document.querySelectorAll(".chat-item").forEach((item) =>
-      item.hidden = !item.dataset.name.includes(value)
-    );
-  }
   if (event.target.id === "global-search") {
     clearTimeout(searchTimer);
     const value = event.target.value;
@@ -1457,6 +1350,13 @@ document.addEventListener("input", (event) => {
   }
 });
 document.addEventListener("change", async (event) => {
+  if (event.target.id === "archive-chat") {
+    S.chat = Number(event.target.value);
+    S.cursor = null;
+    await load().catch(fail);
+    return;
+  }
+
   try {
     if (event.target.id === "theme") {
       localStorage.setItem("threaddock-theme", event.target.value);
@@ -1515,9 +1415,11 @@ setInterval(async () => {
     showLock();
     return;
   }
-  if (S.view === "feed" && !S.query && !S.chat) {
+  if (S.view === "feed" && !S.query) {
     try {
-      const result = await api.request(`/api/events?kind=${S.mode}`);
+      const result = await api.request(
+        `/api/events?kind=${S.mode}&chat=${S.chat || 0}`,
+      );
       if (result.items[0]?.id && result.items[0].id !== S.items[0]?.id) {
         S.newEvents = result.items.filter((item) =>
           item.id > (S.items[0]?.id || 0)

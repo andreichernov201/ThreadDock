@@ -1,6 +1,7 @@
 """Shared media service for every message source. No Telegram imports."""
 
 import asyncio
+import logging
 import shutil
 import tempfile
 import time
@@ -19,6 +20,8 @@ from services.processes import directory_size, remove_directory
 from services.tiktok import TikTokPhotos
 from services.ytdlp import YtDlpAdapter
 from storage.database import Database
+
+logger = logging.getLogger(__name__)
 
 
 class KeyedLocks:
@@ -79,7 +82,7 @@ class MediaPipeline:
                 async with asyncio.timeout(self.settings.download_timeout + self.settings.process_timeout * 2):
                     bundle = None
                     photo_error = None
-                    if link.platform == "TikTok":
+                    if link.platform == "TikTok" and "/video/" not in link.url:
                         try:
                             bundle = await self.photos.download(link, directory)
                         except MediaError as error:
@@ -95,11 +98,11 @@ class MediaPipeline:
                             raise
                         video, has_audio = await self.tools.compatible_video(source, directory)
                         try:
-                            audio = await self.tools.extract_audio(source, directory)
-                        except MediaError as error:
-                            if error.code != "file_too_large":
-                                raise
-                            audio = None  # A transport limit on optional audio must not discard the video.
+                            async with asyncio.timeout(min(30, self.settings.process_timeout)):
+                                audio = await self.tools.extract_audio(source, directory)
+                        except (MediaError, TimeoutError) as error:
+                            logger.warning("optional_audio code=%s", getattr(error, "code", "timeout"))
+                            audio = None
                         bundle = MediaBundle(
                             directory, link.url, link.platform, title, video, audio=audio, has_audio=has_audio
                         )

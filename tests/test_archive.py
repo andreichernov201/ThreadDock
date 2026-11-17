@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from urllib.parse import urlencode
 
-from aiogram.exceptions import TelegramNetworkError
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.methods import SendMessage
 from aiohttp.test_utils import make_mocked_request
 
@@ -73,6 +73,45 @@ class ArchiveFixture(DatabaseFixture):
             "size": 4,
             **values,
         }
+
+
+class ArchivePolicyTests(ArchiveFixture, unittest.TestCase):
+    def test_global_author_optout_prevents_content_in_all_owners(self):
+        first = self.ingest(owner=10)
+        second = self.ingest(owner=20, media=[self.photo()])
+        self.assertEqual(self.repo.set_author_optout(30, True), {10, 20})
+        self.assertIsNone(self.repo.message(10, first))
+        self.assertIsNone(self.repo.message(20, second))
+        self.assertEqual(self.repo.db.execute("SELECT count(*) FROM archive_versions").fetchone()[0], 0)
+        self.assertEqual(self.repo.db.execute("SELECT count(*) FROM archive_search").fetchone()[0], 0)
+        self.assertEqual(self.repo.db.execute("SELECT count(*) FROM archive_media").fetchone()[0], 0)
+        self.assertIsNone(self.ingest(owner=10, body="Must not be stored"))
+        self.assertIsNone(self.ingest(owner=20, body="Must not be stored"))
+        self.repo.set_author_optout(30, False)
+        self.assertIsNotNone(self.ingest(owner=10, telegram_id=2))
+
+    def test_feed_shows_changes_and_deletions_instead_of_normal_messages(self):
+        at = time.time() - 100
+        self.ingest(body="First", at=at)
+        self.assertEqual(self.repo.events(10)["items"], [])
+        self.ingest(body="Second", at=at, changed=at + 1)
+        self.ingest(body="Third", at=at, changed=at + 2)
+        events = self.repo.events(10)["items"]
+        self.assertEqual([item["body"] for item in events], ["Third", "Second"])
+        self.assertEqual({item["kind"] for item in events}, {"edited"})
+
+    def test_reply_media_capture_has_an_event(self):
+        self.ingest(media=[self.photo()], captured_from_reply=True)
+        events = self.repo.events(10)["items"]
+        self.assertEqual([item["kind"] for item in events], ["reply_media"])
+
+    def test_archive_search_respects_event_scope_and_filter(self):
+        self.ingest(body="ordinary word")
+        self.ingest(telegram_id=2, body="deleted word")
+        self.repo.delete_messages(10, "connection-10", 30, [2], "Test chat")
+        result = self.repo.search(10, "word", events_only=True)
+        self.assertEqual([item["body"] for item in result["items"]], ["deleted word"])
+        self.assertEqual(self.repo.search(10, "word", events_only=True, mode="edited")["items"], [])
 
 
 class AuthTests(unittest.TestCase):
@@ -329,11 +368,40 @@ class ServiceTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r[0] for r in rows], ["uncertain", "uncertain"])
         self.assertEqual(self.bot.send_message.await_count, 1)
 
-    async def test_protected_media_never_downloaded(self):
+    async def test_protected_media_attempts_bot_api_download(self):
         identifier = self.ingest(media=[self.photo()], protected=True)
         media = self.repo.message(10, identifier)["media"][0]["id"]
+
+        async def download(file_id, *, destination, **kwargs):
+            destination.write(b"file")
+
+        self.bot.download.side_effect = download
         await self.service._save_media({"payload": {"media_id": media}}, self.repo.owner(10))
-        self.bot.download.assert_not_awaited()
+        self.bot.download.assert_awaited_once()
+        self.assertEqual(self.repo.media(10, media)["status"], "ready")
+
+    async def test_telegram_rejected_protected_media_has_explicit_status(self):
+        identifier = self.ingest(media=[self.photo()], protected=True)
+        media = self.repo.message(10, identifier)["media"][0]["id"]
+        self.bot.download.side_effect = TelegramBadRequest(method=SendMessage(chat_id=10, text=""), message="protected")
+        await self.service._save_media({"payload": {"media_id": media}}, self.repo.owner(10))
+        self.assertEqual(self.repo.media(10, media)["status"], "protected")
+
+    async def test_keyword_notice_explains_match_and_links_to_record(self):
+        from dataclasses import replace
+
+        self.service.config = replace(self.service.config, public_url="https://archive.example.org")
+        self.repo.update_owner(10, {"keywords": ["meeting"]})
+        message_id = self.ingest(body="meeting at six")
+        task = self.repo.claim()
+        self.assertEqual(task["kind"], "notify")
+        await self.service._notify(task, self.repo.owner(10))
+        call = self.bot.send_message.call_args
+        self.assertIn("meeting", call.args[1])
+        self.assertNotIn("meeting at six", call.args[1])  # hide_content remains enforced
+        buttons = call.kwargs["reply_markup"].inline_keyboard
+        self.assertEqual(len(buttons), 1)
+        self.assertIn(f"message={message_id}", buttons[0][0].web_app.url)
 
     async def test_download_is_bounded_and_saved_without_public_url(self):
         identifier = self.ingest(media=[self.photo()])

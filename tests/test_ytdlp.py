@@ -6,6 +6,14 @@ from tests.support import DatabaseFixture
 
 
 class AdapterTests(DatabaseFixture, unittest.TestCase):
+    def test_temporary_unavailability_is_not_classified_as_permanent(self):
+        error = source_error(b"Video unavailable: HTTP Error 503: temporary service failure")
+        self.assertEqual(error.code, "source_temporary")
+        self.assertTrue(error.retryable)
+
+    def test_tiktok_challenge_is_explained(self):
+        self.assertEqual(source_error(b"Video not available, status code 0").code, "source_blocked")
+
     def test_external_ffmpeg_fallback_has_local_only_inputs(self):
         command = build_command(self.settings, normalize_url("https://youtu.be/abc"), self.root, "http://guard")
         self.assertEqual(command[command.index("--downloader") + 1], "native")

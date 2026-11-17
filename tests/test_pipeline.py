@@ -81,6 +81,14 @@ class PipelineTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         self.assertTrue((bundle.directory / bundle.video.filename).is_file())
         self.assertIsNone(bundle.audio)
 
+    async def test_optional_audio_conversion_failure_keeps_video(self):
+        from core.errors import MediaError
+
+        self.pipeline.tools.extract_audio.side_effect = MediaError("Conversion failed", code="conversion_failed")
+        bundle = await self.pipeline.fetch("https://youtu.be/abc")
+        self.assertTrue((bundle.directory / bundle.video.filename).is_file())
+        self.assertIsNone(bundle.audio)
+
 
 class LockTests(unittest.IsolatedAsyncioTestCase):
     async def test_cancelled_waiter_does_not_leak_lock(self):

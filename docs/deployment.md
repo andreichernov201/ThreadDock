@@ -111,3 +111,12 @@ docker compose -p threaddock --env-file /opt/threaddock/shared/.env --env-file i
 Первичная установка Docker: https://docs.docker.com/engine/install/ubuntu/
 Кеш: https://docs.docker.com/build/ci/github-actions/cache/
 GHCR: https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry
+
+
+### Проверка опубликованного архива
+
+При заданном `ARCHIVE_DOMAIN` production-скрипт включает Caddy автоматически.
+После запуска контейнеров выполняется публичная проверка Mini App. Её можно
+повторить: `docker compose -p threaddock exec -T bot python scripts/check_web.py`.
+Успешная проверка контейнера без доступного HTTPS больше не считается успешной
+публикацией веб-интерфейса.

@@ -13,6 +13,17 @@ from services.application import Application
 router = Router()
 
 
+@router.message(F.chat.type == "private", Command("optout", "optin"))
+async def author_policy(message: Message, app: Application):
+    if not message.from_user or message.from_user.is_bot:
+        return
+    excluded = (message.text or "").split()[0].split("@")[0] == "/optout"
+    owners = app.archive.repository.set_author_optout(message.from_user.id, excluded)
+    for owner_id in owners:
+        app.archive.cleanup_owner_blobs(owner_id)
+    await message.answer(T.ARCHIVE_AUTHOR_OPTOUT if excluded else T.ARCHIVE_AUTHOR_OPTIN)
+
+
 @router.business_message()
 @router.edited_business_message()
 async def archive_message(message: Message, app: Application):

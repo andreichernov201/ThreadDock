@@ -29,7 +29,8 @@ class MediaActionTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
 
     async def test_ten_retry_taps_produce_one_delivery_job(self):
         job = self.job()
-        self.database.status(job.id, "failed")
+        self.database.status(job.id, "failed", "source_temporary")
+        self.database.offer_retry(job.id)
         for number in range(10):
             await media_action(self.query(job, identifier=f"tap-{number}"), self.app)
         queued = self.database.claim()
@@ -76,12 +77,12 @@ class MediaActionTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         job = self.job()
         self.database.status(job.id, "failed")
         for number in range(10):
-            self.database.enqueue(
-                [(f"callback:old-{number}", job.url, job.cache_key)],
-                job.destination,
-                "video",
-                100,
+            self.database.connection.execute(
+                """INSERT INTO jobs(request_key,url,cache_key,chat_id,message_id,requester_id,mode,created_at,updated_at)
+                SELECT ?,url,cache_key,chat_id,message_id,requester_id,mode,created_at,updated_at FROM jobs WHERE id=?""",
+                (f"callback:old-{number}", job.id),
             )
+        self.database.connection.commit()
         self.database.recover()
         first = self.database.claim()
         self.assertIsNotNone(first)
