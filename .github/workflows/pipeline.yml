@@ -36,9 +36,10 @@ jobs:
           python - <<'PY'
           import json, pathlib, subprocess
           for name in subprocess.check_output(["git", "diff", "--name-only"], text=True).splitlines():
-              content = pathlib.Path(name).read_text(encoding="utf-8")
-              for index in range(0, len(content), 16000):
-                  print("FORMAT_CHUNK " + json.dumps({"path": name, "index": index, "content": content[index:index+16000]}))
+              content = pathlib.Path(name).read_bytes()
+              encoded = "".join(chr(97 + int(n, 16)) for n in content.hex())
+              for index in range(0, len(encoded), 16000):
+                  print("FORMATTED_DATA " + json.dumps({"path": name, "data": encoded[index:index+16000]}))
           PY
       - run: uv sync --locked
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg

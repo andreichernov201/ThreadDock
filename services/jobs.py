@@ -66,8 +66,12 @@ class JobQueue:
 
     async def _process(self, job: Job) -> None:
         with log_context(
-            job=job.id, chat=job.destination.chat_id, message=job.destination.message_id,
-            business=bool(job.destination.business_id), mode=job.mode, attempt=job.attempts,
+            job=job.id,
+            chat=job.destination.chat_id,
+            message=job.destination.message_id,
+            business=bool(job.destination.business_id),
+            mode=job.mode,
+            attempt=job.attempts,
             media=job.cache_key[:12],
         ):
             await self._run_job(job)
@@ -117,7 +121,10 @@ class JobQueue:
                 await self._notify(job, str(error), retry=error.retryable)
             logger.warning(
                 "download_failed stage=%s code=%s retryable=%s elapsed_ms=%s",
-                stage, error.code, error.retryable, round((time.monotonic() - started) * 1000),
+                stage,
+                error.code,
+                error.retryable,
+                round((time.monotonic() - started) * 1000),
             )
         except Exception as error:
             # SafeFormatter drops exception text and preserves code locations.

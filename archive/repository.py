@@ -315,9 +315,9 @@ class ArchiveRepository:
                 "INSERT INTO archive_search(rowid,owner_id,message_id,body) VALUES (?,?,?,?)",
                 (version_id, owner_id, message_id, searchable),
             )
-            is_edit = (
-                old is not None and bool(old["current_hash"]) and old["current_hash"] != digest
-            ) or (old is None and changed_at > sent_at)
+            is_edit = (old is not None and bool(old["current_hash"]) and old["current_hash"] != digest) or (
+                old is None and changed_at > sent_at
+            )
             if old is None or changed_at >= (old["edited_at"] or old["sent_at"]):
                 self.db.execute(
                     "UPDATE archive_messages SET body=?,current_hash=?,edited_at=?,reply_to=? WHERE id=?",
@@ -425,10 +425,13 @@ class ArchiveRepository:
         return count
 
     def retained(self, owner_id: int, message_id: int) -> bool:
-        return self.db.execute(
-            f"SELECT 1 FROM archive_messages m WHERE m.owner_id=? AND m.id=? AND {RETAINED_MESSAGE}",
-            (owner_id, message_id),
-        ).fetchone() is not None
+        return (
+            self.db.execute(
+                f"SELECT 1 FROM archive_messages m WHERE m.owner_id=? AND m.id=? AND {RETAINED_MESSAGE}",
+                (owner_id, message_id),
+            ).fetchone()
+            is not None
+        )
 
     def _activate_media(self, owner_id: int, message_id: int, media_types: list[str]) -> None:
         if not self.retained(owner_id, message_id):

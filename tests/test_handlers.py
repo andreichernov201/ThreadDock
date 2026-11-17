@@ -39,17 +39,30 @@ class HandlerTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         self.bot.send_message.assert_not_awaited()
 
     async def test_video_with_hidden_source_link_does_not_download_again(self):
-        message = incoming().model_copy(update={
-            "text": None, "caption": "Already downloaded video",
-            "video": Video(file_id="video", file_unique_id="unique", width=320, height=240, duration=1),
-            "caption_entities": [MessageEntity(type="text_link", offset=0, length=7, url="https://youtu.be/abc")],
-        })
+        message = incoming().model_copy(
+            update={
+                "text": None,
+                "caption": "Already downloaded video",
+                "video": Video(file_id="video", file_unique_id="unique", width=320, height=240, duration=1),
+                "caption_entities": [MessageEntity(type="text_link", offset=0, length=7, url="https://youtu.be/abc")],
+            }
+        )
         await handle_links(message, self.app)
         self.assertIsNone(self.database.claim())
         self.bot.send_message.assert_not_awaited()
 
     async def test_ready_attachments_ignore_links_in_captions(self):
-        for field in ("photo", "video", "animation", "document", "audio", "voice", "video_note", "sticker", "paid_media"):
+        for field in (
+            "photo",
+            "video",
+            "animation",
+            "document",
+            "audio",
+            "voice",
+            "video_note",
+            "sticker",
+            "paid_media",
+        ):
             with self.subTest(field=field):
                 await handle_links(incoming().model_copy(update={field: True}), self.app)
                 self.assertIsNone(self.database.claim())

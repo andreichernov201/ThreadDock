@@ -20,7 +20,9 @@ class LoggingTests(unittest.TestCase):
         self.assertIsNotNone(record.exc_info)
 
     def test_context_redaction_and_no_log_injection(self):
-        record = logging.LogRecord("test", logging.INFO, __file__, 1, "url=https://example.org/secret\nforged", (), None)
+        record = logging.LogRecord(
+            "test", logging.INFO, __file__, 1, "url=https://example.org/secret\nforged", (), None
+        )
         formatter = SafeFormatter("%(message)s %(context)s")
         with log_context(job=42, stage="download"):
             first = formatter.format(record)

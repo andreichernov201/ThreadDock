@@ -16,7 +16,6 @@ from services.links import LinkError, extract_urls, normalize_url
 from services.pipeline import MediaPipeline
 from storage.database import Database
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -93,7 +92,11 @@ class Application:
         if requests:
             logger.info(
                 "download_submit chat=%s message=%s business=%s links=%s queued=%s suppressed=%s",
-                destination.chat_id, destination.message_id, bool(destination.business_id),
-                len(requests), count, len(requests) - count,
+                destination.chat_id,
+                destination.message_id,
+                bool(destination.business_id),
+                len(requests),
+                count,
+                len(requests) - count,
             )
         return count, list(dict.fromkeys(errors))

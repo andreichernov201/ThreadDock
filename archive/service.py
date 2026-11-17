@@ -254,7 +254,9 @@ class ArchiveService:
             self.repository.task_status(identifier, "done", result=result)
             logger.info(
                 "archive_task=%s kind=%s state=done elapsed_ms=%s",
-                identifier, task["kind"], round((time.monotonic() - started) * 1000),
+                identifier,
+                task["kind"],
+                round((time.monotonic() - started) * 1000),
             )
         except asyncio.CancelledError:
             current = self.repository.task(owner_id, identifier)

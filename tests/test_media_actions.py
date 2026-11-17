@@ -61,9 +61,16 @@ class MediaActionTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
     def test_retry_keeps_accepted_album_checkpoint(self):
         job = self.job(mode="photos")
         self.database.delivered_piece(job.id, 0, [11, 12])
-        self.database.status(job.id, "uncertain")
+        self.database.status(job.id, "failed")
         self.assertEqual(self.database.request_media(job.id, "photos", 100), "accepted")
         self.assertEqual(self.database.claim().progress, 1)
+
+    def test_unknown_album_delivery_cannot_be_replayed(self):
+        job = self.job(mode="photos")
+        self.database.delivered_piece(job.id, 0, [11, 12])
+        self.database.status(job.id, "uncertain")
+        self.assertEqual(self.database.request_media(job.id, "photos", 100), "uncertain")
+        self.assertIsNone(self.database.claim())
 
     def test_full_queue_does_not_reset_failed_job(self):
         job = self.job()

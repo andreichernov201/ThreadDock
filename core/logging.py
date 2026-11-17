@@ -47,7 +47,9 @@ def configure_logging(directory: Path | None = None) -> None:
     root.handlers[:] = [handler]
     if directory is not None:
         directory.mkdir(parents=True, exist_ok=True)
-        file_handler = RotatingFileHandler(directory / "app.log", maxBytes=10 * 1024**2, backupCount=4, encoding="utf-8")
+        file_handler = RotatingFileHandler(
+            directory / "app.log", maxBytes=10 * 1024**2, backupCount=4, encoding="utf-8"
+        )
         file_handler.setFormatter(formatter)
         root.addHandler(file_handler)
     root.setLevel(logging.INFO)

@@ -20,7 +20,10 @@ async def handle_links(message: Message, app: Application) -> None:
     if has_media(message):
         logger.info(
             "download_skip reason=existing_media chat=%s message=%s business=%s forwarded=%s",
-            message.chat.id, message.message_id, bool(destination.business_id), bool(message.forward_origin),
+            message.chat.id,
+            message.message_id,
+            bool(destination.business_id),
+            bool(message.forward_origin),
         )
         return
     text = message.text or message.caption or ""

@@ -53,7 +53,8 @@ async def main() -> None:
                 async def safe_error(event: ErrorEvent) -> bool:
                     logger.error(
                         "update_failed update=%s type=%s",
-                        event.update.update_id, type(event.exception).__name__,
+                        event.update.update_id,
+                        type(event.exception).__name__,
                         exc_info=(type(event.exception), event.exception, event.exception.__traceback__),
                     )
                     if isinstance(event.exception, sqlite3.Error):
