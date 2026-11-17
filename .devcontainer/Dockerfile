@@ -1,6 +1,6 @@
 FROM ghcr.io/astral-sh/uv:0.13.9 AS uv
 FROM denoland/deno:bin-2.9.8 AS deno
-FROM node:24-bookworm-slim AS node
+FROM node:26-bookworm-slim AS node
 FROM python:3.15-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
