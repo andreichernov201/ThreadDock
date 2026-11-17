@@ -31,10 +31,15 @@ class Job:
 @dataclass(frozen=True)
 class Asset:
     filename: str
-    kind: Literal["video", "photo", "document", "audio"]
+    kind: Literal["video", "photo", "live_photo", "document", "audio"]
     duration: float = 0
     width: int = 0
     height: int = 0
+    photo_filename: str = ""
+
+    @property
+    def parts(self) -> tuple[Asset, ...]:
+        return (self, Asset(self.photo_filename, "photo")) if self.photo_filename else (self,)
 
     def path(self, directory: Path) -> Path:
         if Path(self.filename).name != self.filename or self.filename in {"", ".", ".."}:
@@ -56,17 +61,14 @@ class MediaBundle:
     audio: Asset | None = None
     has_audio: bool = True
     media: tuple[Asset, ...] = ()
+    motion_pending: bool = False
 
     @property
     def assets(self) -> tuple[Asset, ...]:
-        return tuple(
-            dict.fromkeys(
-                ((self.video,) if self.video else ())
-                + self.originals
-                + self.media
-                + ((self.audio,) if self.audio else ())
-            )
+        items = (
+            ((self.video,) if self.video else ()) + self.originals + self.media + ((self.audio,) if self.audio else ())
         )
+        return tuple(dict.fromkeys(part for asset in items for part in asset.parts))
 
     def items(self, mode: DeliveryMode) -> tuple[Asset, ...]:
         if mode == "photos":

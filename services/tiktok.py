@@ -1,10 +1,11 @@
-"""TikTok Photo Mode from public page state; no third-party downloader APIs."""
+"""TikTok public media, with optional discovery of Live Photo motion clips."""
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -16,8 +17,14 @@ from services.http import PublicHttp
 from services.links import VideoLink
 from services.media import MediaTools
 from services.processes import directory_size
+from services.tiktok_live import public_live_photos
 
 logger = logging.getLogger(__name__)
+
+
+def _content_digest(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()[:16]
 
 
 class PhotoModeError(MediaError):
@@ -31,6 +38,9 @@ class PhotoPost:
     music: tuple[str, ...]
     motion: tuple[tuple[str, ...], ...] = ()
     story: bool = False
+    identifier: str = ""
+    is_public: bool = True
+    motion_pending: bool = False
 
 
 class _PageState(HTMLParser):
@@ -69,7 +79,9 @@ def _urls(value) -> tuple[str, ...]:
     return ()
 
 
-def _motion_urls(image: dict) -> tuple[str, ...]:
+def photo_motion_urls(image: dict) -> tuple[str, ...]:
+    if not isinstance(image, dict):
+        return ()
     video = image.get("video") or image.get("livePhoto") or image.get("live_photo") or {}
     if isinstance(video, dict):
         video = video.get("playAddr") or video.get("play_addr") or video.get("videoURL") or video
@@ -105,8 +117,10 @@ def parse_photo_page(html: str, expected_id: str | None = None) -> PhotoPost | N
                         str(node.get("desc") or "TikTok Photo Mode")[:500],
                         candidates,
                         _urls(music.get("playUrl") or music.get("play_url")),
-                        tuple(_motion_urls(image) for image in images),
+                        tuple(photo_motion_urls(image) for image in images),
                         bool(node.get("story") or node.get("is_story")),
+                        identifier,
+                        not any(node.get(key) for key in ("privateItem", "is_private", "forFriend", "secret")),
                     )
                 stack.extend(reversed(list(node.values())))
             elif isinstance(node, list):
@@ -218,7 +232,13 @@ class TikTokPhotos:
                 logger.info("optional_tiktok_audio code=%s", getattr(error, "code", "timeout"))
                 audio = None
             return MediaBundle(directory, link.url, link.platform, title, asset, audio=audio, has_audio=has_audio)
+        return await self.render_post(link, directory, post)
+
+    async def render_post(self, link: VideoLink, directory: Path, post: PhotoPost) -> MediaBundle:
         try:
+            if self.settings.tiktok_live_photos and post.is_public and post.identifier and not any(post.motion):
+                motion = await public_live_photos(self.http, post.identifier, post.images)
+                post = replace(post, motion=motion or post.motion, motion_pending=motion is None)
             return await self._render_post(link, directory, post)
         except MediaError as error:
             raise PhotoModeError(str(error), code=error.code, retryable=error.retryable) from error
@@ -259,23 +279,47 @@ class TikTokPhotos:
                 music = None
         if directory_size(directory) > self.settings.max_download_bytes:
             raise MediaError(T.SERVICES_TIKTOK_PHOTO_POST_TOO_LARGE, code="file_too_large")
-        media = []
+        originals = []
+        motion_paths = {}
+        motion_pending = post.motion_pending
         for index, image in enumerate(images):
             urls = post.motion[index] if index < len(post.motion) else ()
             asset = Asset(image.name, "photo")
             if urls:
                 source = directory / f"live-{index:03}.mp4"
-                await self._download_candidates(urls, source, self.settings.max_download_bytes)
-                motion, _ = await self.media.compatible_video(source, directory)
-                target = directory / f"motion-{index:03}.mp4"
-                motion.path(directory).replace(target)
-                asset = Asset(target.name, "video", motion.duration, motion.width, motion.height)
-            media.append(asset)
+                try:
+                    await self._download_candidates(urls, source, self.settings.max_download_bytes)
+                    motion, _ = await self.media.compatible_video(source, directory)
+                    digest = await asyncio.to_thread(_content_digest, motion.path(directory))
+                    target = directory / f"motion-{index:03}-{digest}.mp4"
+                    motion.path(directory).replace(target)
+                    native = motion.duration <= 10 and target.stat().st_size <= 10_000_000
+                    asset = Asset(
+                        target.name,
+                        "live_photo" if native else "video",
+                        motion.duration,
+                        motion.width,
+                        motion.height,
+                        photo_filename=image.name if native else "",
+                    )
+                    motion_paths[index] = target
+                except (MediaError, TimeoutError) as error:
+                    motion_pending = True
+                    logger.info("optional_tiktok_motion code=%s", getattr(error, "code", "timeout"))
+            originals.append(asset)
         video, has_audio = None, False
-        has_motion = any(asset.kind == "video" for asset in media)
-        if music and not has_motion and not post.story and not re.search(r"/stor(?:y|ies)(?:/|$)", link.url):
+        if music and not post.story and not re.search(r"/stor(?:y|ies)(?:/|$)", link.url):
             try:
-                video, has_audio = await self.media.slideshow(images, music, directory)
+                if motion_paths:
+                    video, has_audio = await self.media.slideshow(images, music, directory, motion=motion_paths)
+                else:
+                    video, has_audio = await self.media.slideshow(images, music, directory)
+                # file_id is keyed by asset name. A recovered moving slideshow
+                # must never reuse a previous degraded/static upload's file_id.
+                digest = await asyncio.to_thread(_content_digest, video.path(directory))
+                target = directory / f"slideshow-{digest}.mp4"
+                video.path(directory).replace(target)
+                video = replace(video, filename=target.name)
             except (MediaError, TimeoutError) as error:
                 logger.info("optional_slideshow code=%s", getattr(error, "code", "timeout"))
         return MediaBundle(
@@ -284,8 +328,8 @@ class TikTokPhotos:
             link.platform,
             post.title,
             video,
-            tuple(Asset(image.name, "photo") for image in images),
+            tuple(originals),
             audio_asset,
             has_audio,
-            tuple(media) if has_motion else (),
+            motion_pending=motion_pending,
         )

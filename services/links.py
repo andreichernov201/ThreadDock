@@ -48,7 +48,8 @@ class VideoLink:
             match = re.search(r"/status/(\d+)", parts.path)
             if match:
                 identity = f"x:{match[1]}"
-        return hashlib.sha256(("media-v3:" + identity).encode()).hexdigest()
+        version = "media-v4:" if self.platform == "TikTok" else "media-v3:"
+        return hashlib.sha256((version + identity).encode()).hexdigest()
 
 
 # Только точные имена: youtube.com.evil.example и произвольные поддомены запрещены.
