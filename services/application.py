@@ -78,7 +78,9 @@ class Application:
             try:
                 link = normalize_url(url)
             except LinkError as error:
-                errors.append(str(error))
+                # Unsupported links are ordinary chat content, not download requests.
+                if str(error) != T.SERVICES_LINKS_UNSUPPORTED_SITE:
+                    errors.append(str(error))
                 continue
             if link.cache_key not in seen:
                 seen.add(link.cache_key)

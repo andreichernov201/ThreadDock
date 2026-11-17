@@ -17,7 +17,7 @@ from services.http import PublicHttp
 from services.links import normalize_url
 from services.media import MediaTools
 from services.processes import directory_size, remove_directory
-from services.tiktok import TikTokPhotos
+from services.tiktok import PhotoModeError, TikTokPhotos
 from services.ytdlp import YtDlpAdapter
 from storage.database import Database
 
@@ -87,27 +87,36 @@ class MediaPipeline:
                     if link.platform == "TikTok" and "/video/" not in link.url:
                         try:
                             bundle = await self.photos.download(link, directory)
+                        except PhotoModeError:
+                            raise
                         except MediaError as error:
-                            if "/photo/" in link.url:
-                                raise
                             photo_error = error
+                            logger.info("tiktok_photo_probe_failed code=%s", error.code)
                     if bundle is None:
                         try:
                             source, title = await self.video.download(link, directory)
-                        except MediaError:
-                            if photo_error and "/photo/" in url:
-                                raise photo_error
-                            raise
-                        video, has_audio = await self.tools.compatible_video(source, directory)
-                        try:
-                            async with asyncio.timeout(min(30, self.settings.process_timeout)):
-                                audio = await self.tools.extract_audio(source, directory)
-                        except (MediaError, TimeoutError) as error:
-                            logger.warning("optional_audio code=%s", getattr(error, "code", "timeout"))
-                            audio = None
-                        bundle = MediaBundle(
-                            directory, link.url, link.platform, title, video, audio=audio, has_audio=has_audio
-                        )
+                        except MediaError as video_error:
+                            if link.platform == "TikTok" and "/video/" in link.url:
+                                # TikTok sometimes serves photo posts at a /video/ route.
+                                # Only check after video extraction failed.
+                                photo_bundle = await self.photos.download(link, directory)
+                                if photo_bundle is not None:
+                                    bundle = photo_bundle
+                            if bundle is None:
+                                if photo_error and video_error.code == "extractor_failed":
+                                    raise photo_error from video_error
+                                raise
+                        if bundle is None:
+                            video, has_audio = await self.tools.compatible_video(source, directory)
+                            try:
+                                async with asyncio.timeout(min(30, self.settings.process_timeout)):
+                                    audio = await self.tools.extract_audio(source, directory)
+                            except (MediaError, TimeoutError) as error:
+                                logger.warning("optional_audio code=%s", getattr(error, "code", "timeout"))
+                                audio = None
+                            bundle = MediaBundle(
+                                directory, link.url, link.platform, title, video, audio=audio, has_audio=has_audio
+                            )
                     keep = {
                         asset.filename
                         for asset in (bundle.video, *bundle.originals) + ((bundle.audio,) if bundle.audio else ())

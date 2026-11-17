@@ -1,6 +1,7 @@
 """TikTok Photo Mode from public page state; no third-party downloader APIs."""
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
@@ -14,6 +15,12 @@ from services.http import PublicHttp
 from services.links import VideoLink
 from services.media import MediaTools
 from services.processes import directory_size
+
+logger = logging.getLogger(__name__)
+
+
+class PhotoModeError(MediaError):
+    """The page is a confirmed photo post; do not fall back to a video extractor."""
 
 
 @dataclass(frozen=True)
@@ -114,9 +121,27 @@ class TikTokPhotos:
     async def download(self, link: VideoLink, directory: Path) -> MediaBundle | None:
         response = await self.http.get(link.url, 8 * 1024**2)
         match = re.search(r"/(?:photo|video)/(\d+)", response.url)
-        post = parse_photo_page(response.body.decode("utf-8", errors="replace"), match[1] if match else None)
+        confirmed_photo = "/photo/" in link.url or "/photo/" in response.url
+        try:
+            post = parse_photo_page(response.body.decode("utf-8", errors="replace"), match[1] if match else None)
+        except MediaError as error:
+            raise PhotoModeError(str(error), code=error.code, retryable=error.retryable) from error
+        logger.info(
+            "tiktok_photo_probe route=%s metadata=%s bytes=%s",
+            "photo" if confirmed_photo else "video" if "/video/" in response.url else "other",
+            "found" if post is not None else "missing",
+            len(response.body),
+        )
         if post is None:
+            if confirmed_photo:
+                raise PhotoModeError(T.SERVICES_TIKTOK_PHOTO_METADATA_UNAVAILABLE, code="photo_metadata_missing")
             return None
+        try:
+            return await self._render_post(link, directory, post)
+        except MediaError as error:
+            raise PhotoModeError(str(error), code=error.code, retryable=error.retryable) from error
+
+    async def _render_post(self, link: VideoLink, directory: Path, post: PhotoPost) -> MediaBundle:
         if len(post.images) > self.settings.max_photos:
             raise MediaError(T.SERVICES_TIKTOK_TOO_MANY_PHOTOS, code="photo_count")
         images: list[Path] = []
