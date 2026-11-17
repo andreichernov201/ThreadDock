@@ -50,10 +50,19 @@ class PipelineTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
 
     async def test_video_route_can_use_photo_fallback(self):
         from core.errors import MediaError
-        from dataclasses import replace
+        from core.models import MediaBundle
+
+        async def photo_download(link, directory):
+            (directory / "video.mp4").write_bytes(b"fixture-video")
+            (directory / "original.jpg").write_bytes(b"fixture-image")
+            return MediaBundle(
+                directory, link.url, link.platform, "Photo",
+                Asset("video.mp4", "video", 1, 320, 240),
+                (Asset("original.jpg", "document"),),
+            )
 
         self.pipeline.video.download.side_effect = MediaError("Unsupported URL", code="extractor_failed")
-        self.pipeline.photos.download = AsyncMock(return_value=self.bundle(photos=1))
+        self.pipeline.photos.download = AsyncMock(side_effect=photo_download)
         bundle = await self.pipeline.fetch("https://www.tiktok.com/@someone/video/123")
         self.assertEqual(len(bundle.originals), 1)
         self.pipeline.photos.download.assert_awaited_once()
