@@ -12,7 +12,7 @@ from services.delivery import TelegramDelivery
 from services.gallery import GalleryAdapter
 from services.processes import ProcessResult
 from services.tiktok import PhotoPost, TikTokPhotos, parse_photo_page
-from services.tiktok_live import parse_live_photos, public_live_photos
+from services.tiktok_live import parse_live_photos, public_live_photos, public_video_urls
 from tests.support import DatabaseFixture
 
 
@@ -31,6 +31,24 @@ class ResolverTests(unittest.IsolatedAsyncioTestCase):
         }
         data.update(changes)
         return json.dumps({"code": 0, "data": data}).encode()
+
+    async def test_video_fallback_rejects_wrong_identity_and_untrusted_media(self):
+        for identifier, url, expected in (
+            (self.identifier, "https://www.tikwm.com/video/media/clip", True),
+            ("7000000000000000002", "https://www.tikwm.com/video/media/clip", False),
+            (self.identifier, "https://127.0.0.1/clip", False),
+            (self.identifier, "https://evil.example/clip", False),
+        ):
+            body = json.dumps({"code": 0, "data": {"id": identifier, "play": url}}).encode()
+            http = SimpleNamespace(get_browser=AsyncMock(return_value=SimpleNamespace(body=body)))
+            self.assertEqual(bool(await public_video_urls(http, self.identifier)), expected)
+
+    def test_private_video_page_is_not_eligible_for_public_fallback(self):
+        from services.tiktok import parse_video_page
+
+        node = {"id": self.identifier, "privateItem": True, "video": {"playAddr": "https://cdn.example/clip"}}
+        page = '<script id="SIGI_STATE">' + json.dumps(node) + "</script>"
+        self.assertIsNone(parse_video_page(page, self.identifier))
 
     def test_keeps_live_photo_in_second_position(self):
         result = parse_live_photos(self.response(), self.identifier, self.images)

@@ -76,3 +76,28 @@ async def public_live_photos(
     except (MediaError, TimeoutError) as error:
         logger.info("optional_tiktok_live_lookup code=%s", getattr(error, "code", "timeout"))
         return None
+
+
+async def public_video_urls(http: PublicHttp, identifier: str) -> tuple[str, ...]:
+    """Resolve only an ID already matched to a public TikTok video page."""
+    if not identifier.isascii() or not identifier.isdigit() or not 10 <= len(identifier) <= 25:
+        return ()
+    try:
+        async with asyncio.timeout(8):
+            response = await http.get_browser(f"https://www.tikwm.com/api/?url={identifier}&hd=1", 2 * 1024**2)
+        payload = json.loads(response.body)
+        data = payload.get("data")
+        if payload.get("code") != 0 or not isinstance(data, dict) or str(data.get("id")) != identifier:
+            return ()
+        urls = []
+        for key in ("hdplay", "play"):
+            url = data.get(key)
+            if not isinstance(url, str):
+                continue
+            check_https_url(url)
+            host = urlsplit(url).hostname or ""
+            if host == "www.tikwm.com" or any(host == s or host.endswith("." + s) for s in CDN_SUFFIXES):
+                urls.append(url)
+        return tuple(dict.fromkeys(urls))
+    except (MediaError, TimeoutError, ValueError, AttributeError, TypeError):
+        return ()
