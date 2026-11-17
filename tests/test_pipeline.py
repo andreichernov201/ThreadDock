@@ -26,7 +26,6 @@ class PipelineTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         return Asset("video.mp4", "video", 1, 320, 240), True
 
     async def test_confirmed_photo_error_never_reaches_video_extractor(self):
-        from core.errors import MediaError
         from services.tiktok import PhotoModeError
 
         self.pipeline.photos.download = AsyncMock(
