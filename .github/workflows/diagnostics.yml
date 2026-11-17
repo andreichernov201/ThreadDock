@@ -1,0 +1,68 @@
+name: Read production diagnostics
+on:
+  push:
+    branches: [ops/read-diagnostics]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  diagnostics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production
+    steps:
+      - name: Read bounded diagnostics
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PORT: ${{ secrets.VPS_PORT || '22' }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p "$RUNNER_TEMP/deploy-ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$RUNNER_TEMP/deploy-ssh/key"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/deploy-ssh/known_hosts"
+          cat > "$RUNNER_TEMP/deploy-ssh/config" <<EOF
+          Host deploy
+            HostName $VPS_HOST
+            User $VPS_USER
+            Port $VPS_PORT
+            IdentityFile $RUNNER_TEMP/deploy-ssh/key
+            UserKnownHostsFile $RUNNER_TEMP/deploy-ssh/known_hosts
+            StrictHostKeyChecking yes
+            IdentitiesOnly yes
+            BatchMode yes
+            ConnectTimeout 15
+          EOF
+          trap 'rm -rf -- "$RUNNER_TEMP/deploy-ssh"' EXIT
+          ssh -F "$RUNNER_TEMP/deploy-ssh/config" deploy 'docker exec -i threaddock-bot-1 python -' <<'PY'
+          import asyncio, json, sqlite3, tempfile, re
+          from pathlib import Path
+          from urllib.parse import urlsplit
+          from config import load_settings
+          from services.links import normalize_url
+          from services.ytdlp import build_command
+          from services.network import SafeProxy
+          from services.processes import run_process
+          db=sqlite3.connect("file:/app/data/threaddock.sqlite3?mode=ro", uri=True)
+          db.row_factory=sqlite3.Row
+          rows=db.execute("SELECT id,status,error_code,attempts,url,updated_at FROM jobs WHERE status IN ('failed','uncertain') ORDER BY updated_at DESC LIMIT 8").fetchall()
+          for row in rows:
+              data=dict(row); data["platform"]=urlsplit(data.pop("url")).hostname; print(json.dumps(data))
+          async def probe():
+              if not rows: return
+              settings=load_settings()
+              link=normalize_url(rows[0]["url"])
+              with tempfile.TemporaryDirectory(dir="/app/data/work") as directory:
+                  async with SafeProxy() as proxy:
+                      command=build_command(settings,link,Path(directory),proxy.url)
+                      command.insert(command.index("--"),"--skip-download")
+                      result=await run_process(command,timeout=50)
+                  text=result.stderr.decode(errors="replace")
+                  text=re.sub(r"https?://\S+","[url]",text)
+                  print("EXTRACTOR_PROBE",result.returncode,text[-1800:])
+          asyncio.run(probe())
+          PY
