@@ -11,6 +11,9 @@ class PipelineTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         super().setUp()
         self.pipeline = MediaPipeline(self.settings, self.database, None)
+        self.pipeline.gallery.download = AsyncMock(
+            side_effect=__import__("core.errors", fromlist=["MediaError"]).MediaError("Unavailable", code="unavailable")
+        )
         self.pipeline.video.download = AsyncMock(side_effect=self.download)
         self.pipeline.tools.compatible_video = AsyncMock(side_effect=self.convert)
         self.pipeline.tools.extract_audio = AsyncMock(return_value=None)

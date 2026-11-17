@@ -48,13 +48,14 @@ class Settings:
     max_upload_bytes: int = 49_000_000
     max_duration: int = 1800
     max_photos: int = 100
-    cache_ttl: int = 7 * 86400
+    cache_ttl: int = 3 * 86400
     cache_max_bytes: int = 5 * 1024**3
     min_free_bytes: int = 1024**3
     retries: int = 2
     retention_days: int = 7
     shutdown_timeout: int = 30
     ytdlp: str = "yt-dlp"
+    gallerydl: str = "gallery-dl"
     ffmpeg: str = "ffmpeg"
     ffprobe: str = "ffprobe"
     deno: str = "deno"
@@ -104,13 +105,14 @@ def load_settings(*, require_token: bool = True) -> Settings:
         max_upload_bytes=_integer("MAX_UPLOAD_MB", 49, maximum=2000) * 1_000_000,
         max_duration=_integer("MAX_DURATION_SECONDS", 1800),
         max_photos=_integer("MAX_PHOTOS", 100, maximum=1000),
-        cache_ttl=_integer("CACHE_TTL_HOURS", 168) * 3600,
+        cache_ttl=min(72, _integer("CACHE_TTL_HOURS", 72)) * 3600,
         cache_max_bytes=_integer("CACHE_MAX_MB", 5120) * 1024**2,
         min_free_bytes=_integer("MIN_FREE_DISK_MB", 1024) * 1024**2,
         retries=_integer("DOWNLOAD_RETRIES", 2, minimum=0, maximum=10),
         retention_days=_integer("JOB_RETENTION_DAYS", 7),
         shutdown_timeout=_integer("SHUTDOWN_TIMEOUT_SECONDS", 30),
         ytdlp=os.getenv("YTDLP_EXECUTABLE", "yt-dlp"),
+        gallerydl=os.getenv("GALLERYDL_EXECUTABLE", "gallery-dl"),
         ffmpeg=os.getenv("FFMPEG_EXECUTABLE", "ffmpeg"),
         ffprobe=os.getenv("FFPROBE_EXECUTABLE", "ffprobe"),
         deno=os.getenv("DENO_EXECUTABLE", "deno"),

@@ -24,7 +24,8 @@ async def download(url: str) -> None:
                 pipeline = MediaPipeline(settings, database, http)
                 pipeline.clean_work()
                 bundle = await pipeline.fetch(url)
-                print(T.DOWNLOAD_VIDEO_PATH.format(value1=bundle.directory / bundle.video.filename))
+                for asset in bundle.items("video"):
+                    print(T.DOWNLOAD_VIDEO_PATH.format(value1=asset.path(bundle.directory)))
                 print(
                     T.DOWNLOAD_PHOTO_SUMMARY.format(
                         value1=len(bundle.originals), value2=T.COMMON_PRESENT if bundle.audio else T.COMMON_ABSENT

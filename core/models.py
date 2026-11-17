@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
-DeliveryMode = Literal["video", "photos", "audio"]
+DeliveryMode = Literal["video", "album", "photos", "audio"]
 
 
 @dataclass(frozen=True)
@@ -31,7 +31,7 @@ class Job:
 @dataclass(frozen=True)
 class Asset:
     filename: str
-    kind: Literal["video", "document", "audio"]
+    kind: Literal["video", "photo", "document", "audio"]
     duration: float = 0
     width: int = 0
     height: int = 0
@@ -51,17 +51,31 @@ class MediaBundle:
     source_url: str
     platform: str
     title: str
-    video: Asset
+    video: Asset | None
     originals: tuple[Asset, ...] = ()
     audio: Asset | None = None
     has_audio: bool = True
+    media: tuple[Asset, ...] = ()
+
+    @property
+    def assets(self) -> tuple[Asset, ...]:
+        return tuple(
+            dict.fromkeys(
+                ((self.video,) if self.video else ())
+                + self.originals
+                + self.media
+                + ((self.audio,) if self.audio else ())
+            )
+        )
 
     def items(self, mode: DeliveryMode) -> tuple[Asset, ...]:
         if mode == "photos":
             return self.originals
         if mode == "audio":
             return (self.audio,) if self.audio else ()
-        return (self.video,)
+        if mode == "album" and self.originals and not self.media:
+            return self.originals
+        return self.media or ((self.video,) if self.video else self.originals)
 
     def serialize(self, data_root: Path) -> str:
         data = asdict(self)
@@ -74,7 +88,8 @@ class MediaBundle:
         directory = (data_root / data.pop("directory")).resolve()
         if not directory.is_relative_to(data_root.resolve()) or directory == data_root.resolve():
             raise ValueError("Invalid cache directory")
-        data["video"] = Asset(**data["video"])
+        data["video"] = Asset(**data["video"]) if data["video"] else None
         data["originals"] = tuple(Asset(**item) for item in data["originals"])
         data["audio"] = Asset(**data["audio"]) if data["audio"] else None
+        data["media"] = tuple(Asset(**item) for item in data.get("media", ()))
         return cls(directory=directory, **data)

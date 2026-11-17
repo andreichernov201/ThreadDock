@@ -166,6 +166,24 @@ class MediaTools:
             or target.stat().st_size > self.settings.max_upload_bytes
         ):
             raise MediaError(T.SERVICES_MEDIA_COMPATIBLE_VIDEO_FAILED, code="invalid_output")
+        # A readable container header alone does not establish that its frames decode.
+        await self.ffmpeg(
+            [
+                "-xerror",
+                "-protocol_whitelist",
+                "file,pipe,crypto",
+                "-i",
+                str(target),
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a:0?",
+                "-f",
+                "null",
+                "-",
+            ],
+            directory,
+        )
         return Asset(target.name, "video", verified.duration, verified.width, verified.height), bool(
             verified.audio_codec
         )
@@ -183,7 +201,7 @@ class MediaTools:
                 str(source),
                 "-vn",
                 "-c:a",
-                "aac",
+                "copy" if info.audio_codec == "aac" else "aac",
                 "-b:a",
                 "192k",
                 "-movflags",
@@ -196,8 +214,45 @@ class MediaTools:
             raise MediaError(T.SERVICES_MEDIA_AUDIO_TOO_LARGE, code="file_too_large")
         return Asset(target.name, "audio", info.duration)
 
+    async def photo(self, source: Path, directory: Path) -> Asset:
+        info = await self.probe(source)
+        if not info.video_codec or min(info.width, info.height) <= 0 or info.width * info.height > 80_000_000:
+            raise MediaError(T.SERVICES_TIKTOK_INVALID_IMAGE, code="invalid_image")
+        suitable = (
+            source.suffix.lower() in {".jpg", ".jpeg", ".png"}
+            and source.stat().st_size <= 10_000_000
+            and info.width + info.height <= 10000
+            and max(info.width, info.height) / min(info.width, info.height) <= 20
+        )
+        target = source
+        if not suitable:
+            target = directory / (source.stem + "-photo.jpg")
+            await self.ffmpeg(
+                [
+                    "-protocol_whitelist",
+                    "file,pipe,crypto",
+                    "-i",
+                    str(source),
+                    "-frames:v",
+                    "1",
+                    "-vf",
+                    "scale=4096:4096:force_original_aspect_ratio=decrease,"
+                    "pad=max(iw\\,ceil(ih/20)):max(ih\\,ceil(iw/20)):(ow-iw)/2:(oh-ih)/2,setsar=1",
+                    "-q:v",
+                    "2",
+                    str(target),
+                ],
+                directory,
+            )
+            info = await self.probe(target)
+        if target.stat().st_size > min(10_000_000, self.settings.max_upload_bytes):
+            raise MediaError(T.SERVICES_DELIVERY_FILE_TOO_LARGE, code="file_too_large")
+        return Asset(target.name, "photo", width=info.width, height=info.height)
+
     async def slideshow(self, images: list[Path], audio: Path | None, directory: Path) -> tuple[Asset, bool]:
         duration = (await self.probe(audio)).duration if audio else len(images) * 3.0
+        if len(images) == 1 and audio:
+            duration = min(5.0, duration)
         if not images or not 0 < duration <= self.settings.max_duration:
             raise MediaError(T.SERVICES_MEDIA_INVALID_SLIDESHOW_DURATION, code="duration_limit")
         frames: list[str] = []

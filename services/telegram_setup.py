@@ -29,6 +29,8 @@ async def configure_telegram(bot, archive_config):
     groups = [
         ("enable", T.SERVICES_TELEGRAM_SETUP_COMMAND_ENABLE),
         ("disable", T.SERVICES_TELEGRAM_SETUP_COMMAND_DISABLE),
+        ("photos", T.GROUP_MODE_COMMAND_PHOTOS),
+        ("slideshow", T.GROUP_MODE_COMMAND_SLIDESHOW),
         ("status", T.SERVICES_TELEGRAM_SETUP_COMMAND_MY_TASKS),
         ("help", T.SERVICES_TELEGRAM_SETUP_COMMAND_HELP),
     ]

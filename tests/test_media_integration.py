@@ -116,6 +116,34 @@ class FFmpegIntegrationTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
             red, blue = sum(result.stdout[0::3]), sum(result.stdout[2::3])
             self.assertGreater(red if expected == "red" else blue, blue if expected == "red" else red)
 
+    async def test_single_photo_is_capped_at_five_seconds_and_short_audio_is_not_extended(self):
+        photo = self.fixture("one.jpg", "red")
+        for duration in (8, 1.2):
+            music = self.root / "music.m4a"
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-nostdin",
+                    "-v",
+                    "error",
+                    "-y",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    f"sine=frequency=440:duration={duration}",
+                    "-c:a",
+                    "aac",
+                    str(music),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=20,
+            )
+            asset, has_audio = await self.tools.slideshow([photo], music, self.root)
+            self.assertTrue(has_audio)
+            self.assertLessEqual(asset.duration, 5.0)
+            self.assertAlmostEqual(asset.duration, min(5, duration), delta=0.1)
+
 
 @unittest.skipUnless(shutil.which("yt-dlp"), "yt-dlp is not installed")
 class ExtractorOptionsTests(DatabaseFixture, unittest.TestCase):

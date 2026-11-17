@@ -24,6 +24,7 @@ def validate_runtime(settings: Settings, *, require_token: bool = True) -> None:
             raise ValueError(T.SERVICES_RUNTIME_INVALID_TOKEN) from error
     for name, executable, flag in (
         ("yt-dlp", settings.ytdlp, "--version"),
+        ("gallery-dl", settings.gallerydl, "--version"),
         ("FFmpeg", settings.ffmpeg, "-version"),
         ("ffprobe", settings.ffprobe, "-version"),
         ("Deno", settings.deno, "--version"),

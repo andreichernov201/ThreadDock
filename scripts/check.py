@@ -15,7 +15,7 @@ def main() -> int:
     parser.add_argument("--full", action="store_true", help="require media, Deno and browser checks")
     arguments = parser.parse_args()
     os.chdir(ROOT)
-    required = ["ffmpeg", "ffprobe", "yt-dlp", "deno", "node"] if arguments.full else []
+    required = ["ffmpeg", "ffprobe", "yt-dlp", "gallery-dl", "deno", "node"] if arguments.full else []
     missing = [name for name in required if not shutil.which(name)]
     if missing:
         print("Missing integration tools: " + ", ".join(missing), file=sys.stderr)

@@ -48,7 +48,7 @@ class VideoLink:
             match = re.search(r"/status/(\d+)", parts.path)
             if match:
                 identity = f"x:{match[1]}"
-        return hashlib.sha256(("media-v1:" + identity).encode()).hexdigest()
+        return hashlib.sha256(("media-v2:" + identity).encode()).hexdigest()
 
 
 # Только точные имена: youtube.com.evil.example и произвольные поддомены запрещены.
