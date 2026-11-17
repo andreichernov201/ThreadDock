@@ -60,6 +60,8 @@ const assert = require("node:assert/strict");
     await page.locator('.record-toolbar [data-action="close-modal"]').click();
     await page.locator('.bottom-nav [data-view="stats"]').click();
     await page.locator(".heatmap").waitFor();
+    assert(await page.locator(".insight-metrics").isVisible());
+    assert(await page.locator("#stats-chat").isVisible());
     assert.equal(await page.locator(".stat").count(), 4);
     await page.locator('.bottom-nav [data-view="feed"]').click();
     await page.setViewportSize({ width: 1200, height: 900 });

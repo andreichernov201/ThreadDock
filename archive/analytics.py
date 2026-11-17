@@ -5,6 +5,7 @@ import statistics
 import time
 from collections import Counter, defaultdict
 
+from archive.insights import insights
 from core import texts as T
 
 
@@ -79,6 +80,7 @@ def statistics_for(
         (*values, start, end),
     ).fetchone()
     return {
+        "insights": insights(repository, owner_id, start, end, chat_id, offset, sample),
         "totals": current,
         "previous": previous,
         "activity": activity,
