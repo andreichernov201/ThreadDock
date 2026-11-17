@@ -1,8 +1,13 @@
+import asyncio
 import json
 import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from core.errors import MediaError
-from services.tiktok import parse_photo_page
+from services.links import normalize_url
+from services.tiktok import PhotoModeError, TikTokPhotos, parse_photo_page
 
 
 def page(item):
@@ -61,6 +66,21 @@ class PhotoMetadataTests(unittest.TestCase):
     def test_missing_image_url_does_not_silently_drop_a_slide(self):
         with self.assertRaises(MediaError):
             parse_photo_page(page({"id": "123", "imagePost": {"images": [{"imageURL": {}}]}}), "123")
+
+    def test_photo_redirect_without_metadata_is_not_treated_as_video(self):
+        class DummyResponse:
+            url = "https://www.tiktok.com/@person/photo/123"
+            body = b"<html><body>blocked</body></html>"
+
+        http = SimpleNamespace(get=AsyncMock(return_value=DummyResponse()))
+        photos = TikTokPhotos(SimpleNamespace(), http, None)
+
+        async def check():
+            with self.assertRaises(PhotoModeError) as captured:
+                await photos.download(normalize_url("https://vm.tiktok.com/example/"), Path("."))
+            self.assertEqual(captured.exception.code, "photo_metadata_missing")
+
+        asyncio.run(check())
 
     def test_invalid_json_is_handled(self):
         self.assertIsNone(parse_photo_page('<script id="SIGI_STATE">broken</script>'))

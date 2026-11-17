@@ -25,6 +25,50 @@ class PipelineTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         (directory / "video.mp4").write_bytes(b"processed")
         return Asset("video.mp4", "video", 1, 320, 240), True
 
+    async def test_confirmed_photo_error_never_reaches_video_extractor(self):
+        from services.tiktok import PhotoModeError
+
+        self.pipeline.photos.download = AsyncMock(
+            side_effect=PhotoModeError("Photo metadata unavailable", code="photo_metadata_missing")
+        )
+        with self.assertRaises(PhotoModeError):
+            await self.pipeline.fetch("https://www.tiktok.com/@someone/photo/123")
+        self.pipeline.video.download.assert_not_awaited()
+
+    async def test_short_tiktok_link_preserves_photo_failure_on_video_fallback(self):
+        from core.errors import MediaError
+
+        self.pipeline.photos.download = AsyncMock(
+            side_effect=MediaError("Source rejected photo", code="source_http", retryable=True)
+        )
+        self.pipeline.video.download.side_effect = MediaError("Unsupported URL", code="extractor_failed")
+        with self.assertRaises(MediaError) as captured:
+            await self.pipeline.fetch("https://vm.tiktok.com/abc/")
+        self.assertEqual(captured.exception.code, "source_http")
+        self.assertTrue(captured.exception.retryable)
+
+    async def test_video_route_can_use_photo_fallback(self):
+        from core.errors import MediaError
+        from core.models import MediaBundle
+
+        async def photo_download(link, directory):
+            (directory / "video.mp4").write_bytes(b"fixture-video")
+            (directory / "original.jpg").write_bytes(b"fixture-image")
+            return MediaBundle(
+                directory,
+                link.url,
+                link.platform,
+                "Photo",
+                Asset("video.mp4", "video", 1, 320, 240),
+                (Asset("original.jpg", "document"),),
+            )
+
+        self.pipeline.video.download.side_effect = MediaError("Unsupported URL", code="extractor_failed")
+        self.pipeline.photos.download = AsyncMock(side_effect=photo_download)
+        bundle = await self.pipeline.fetch("https://www.tiktok.com/@someone/video/123")
+        self.assertEqual(len(bundle.originals), 1)
+        self.pipeline.photos.download.assert_awaited_once()
+
     async def test_download_publishes_only_result_assets(self):
         bundle = await self.pipeline.fetch("https://youtu.be/abc")
         self.assertEqual([path.name for path in bundle.directory.iterdir()], ["video.mp4"])
