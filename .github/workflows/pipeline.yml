@@ -20,8 +20,8 @@ jobs:
         include:
           - os: windows-latest
             python: "3.14"
-          # Keep macOS coverage on Intel while the ARM hosted pool cannot acquire jobs.
-          - os: macos-26-intel
+          # Keep macOS coverage on the stable Intel pool; newer/ARM pools can fail to acquire jobs.
+          - os: macos-15-intel
             python: "3.14"
     concurrency:
       group: compatibility-${{ matrix.os }}-${{ matrix.python }}-${{ github.ref }}
