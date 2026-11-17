@@ -66,6 +66,7 @@ class HandlerTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
     async def test_ready_attachments_ignore_links_in_captions(self):
         for field in (
             "photo",
+            "live_photo",
             "video",
             "animation",
             "document",

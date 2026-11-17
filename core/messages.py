@@ -1,6 +1,17 @@
 """Message classification shared by ingestion and the downloader."""
 
-MEDIA_FIELDS = ("photo", "video", "animation", "document", "audio", "voice", "video_note", "sticker", "paid_media")
+MEDIA_FIELDS = (
+    "photo",
+    "live_photo",
+    "video",
+    "animation",
+    "document",
+    "audio",
+    "voice",
+    "video_note",
+    "sticker",
+    "paid_media",
+)
 
 
 def has_media(message) -> bool:

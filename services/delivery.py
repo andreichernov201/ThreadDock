@@ -1,5 +1,7 @@
 """Telegram transport: scoped file_id cache and durable delivery checkpoints."""
 
+import logging
+
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
@@ -17,6 +19,8 @@ from core import texts as T
 from core.errors import MediaError, MissingAsset
 from core.models import Asset, Destination, Job, MediaBundle
 from storage.database import Database
+
+logger = logging.getLogger(__name__)
 
 
 def target_options(destination: Destination) -> dict:
@@ -168,5 +172,5 @@ class TelegramDelivery:
                         business_connection_id=job.destination.business_id or None,
                         reply_markup=self.keyboard(job, bundle),
                     )
-                except TelegramAPIError:
-                    pass
+                except TelegramAPIError as error:
+                    logger.info("album_keyboard_unavailable type=%s", type(error).__name__)
