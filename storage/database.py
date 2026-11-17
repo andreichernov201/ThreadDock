@@ -350,7 +350,9 @@ class Database:
             bundle = MediaBundle.deserialize(row[0], self.data_root)
         except (ValueError, KeyError, TypeError):
             return None
-        items = bundle.items(mode)
+        if bundle.motion_pending and mode != "audio":
+            return None
+        items = tuple(part for asset in bundle.items(mode) for part in asset.parts)
         if not items or not all(self.file_id(bot_id, key, asset.filename, asset.kind) for asset in items):
             return None
         with self.connection:

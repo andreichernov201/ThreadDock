@@ -1,7 +1,8 @@
 """Gallery extraction in an isolated CLI; every media download uses PublicHttp.
 
 gallery-dl is a separately distributed GPL-2.0 dependency. No upstream code is
-copied into this MIT project, no user configuration or third-party API is used.
+copied into this MIT project and no user configuration is loaded. TikTok's
+optional public motion discovery is shared with the direct page adapter.
 """
 
 import json
@@ -20,6 +21,7 @@ from services.links import VideoLink, normalize_url
 from services.media import MediaTools
 from services.network import SafeProxy
 from services.processes import directory_size, run_process
+from services.tiktok import PhotoPost, TikTokPhotos, photo_motion_urls
 from services.ytdlp import source_error
 
 logger = logging.getLogger(__name__)
@@ -114,6 +116,27 @@ class GalleryAdapter:
         if result.returncode:
             raise source_error(result.stderr)
         entries = parse_gallery(result.stdout, self.settings.max_photos, story_id)
+        # The same motion discovery/rendering must run when the independent
+        # extractor succeeds after the direct page failed.
+        image_entries = [(url, metadata) for url, metadata in entries if metadata.get("type") == "image"]
+        ids = {str(metadata.get("id") or "") for _, metadata in entries}
+        if (
+            link.platform == "TikTok"
+            and image_entries
+            and len(ids) == 1
+            and all(metadata.get("type") in {"image", "audio"} for _, metadata in entries)
+        ):
+            metadata = image_entries[0][1]
+            post = PhotoPost(
+                str(metadata.get("title") or metadata.get("desc") or "TikTok")[:500],
+                tuple((url,) for url, _ in image_entries),
+                tuple(url for url, info in entries if info.get("type") == "audio"),
+                tuple(photo_motion_urls(info.get("image") or {}) for _, info in image_entries),
+                bool(metadata.get("story") or metadata.get("is_story")),
+                next(iter(ids)),
+                not any(metadata.get(key) for key in ("privateItem", "is_private", "forFriend", "secret")),
+            )
+            return await TikTokPhotos(self.settings, self.http, self.tools).render_post(link, directory, post)
         assets: list[Asset] = []
         audio = None
         title = link.platform

@@ -249,12 +249,16 @@ class MediaTools:
             raise MediaError(T.SERVICES_DELIVERY_FILE_TOO_LARGE, code="file_too_large")
         return Asset(target.name, "photo", width=info.width, height=info.height)
 
-    async def slideshow(self, images: list[Path], audio: Path | None, directory: Path) -> tuple[Asset, bool]:
+    async def slideshow(
+        self, images: list[Path], audio: Path | None, directory: Path, *, motion: dict[int, Path] | None = None
+    ) -> tuple[Asset, bool]:
         duration = len(images) * 3.0
         if audio and len(images) == 1:
             duration = min(duration, (await self.probe(audio)).duration)
         if not images or not 0 < duration <= self.settings.max_duration:
             raise MediaError(T.SERVICES_MEDIA_INVALID_SLIDESHOW_DURATION, code="duration_limit")
+        if motion:
+            return await self._motion_slideshow(images, motion, audio, directory, duration)
         frames: list[str] = []
         for index, image in enumerate(images):
             frame = f"frame-{index:03}.jpg"
@@ -312,5 +316,61 @@ class MediaTools:
             "+faststart",
             str(raw),
         ]
+        await self.ffmpeg(args, directory)
+        return await self.compatible_video(raw, directory)
+
+    async def _motion_slideshow(
+        self, images: list[Path], motion: dict[int, Path], audio: Path | None, directory: Path, duration: float
+    ) -> tuple[Asset, bool]:
+        segments = []
+        for index, image in enumerate(images):
+            name = f"slide-{index:03}.mp4"
+            source = motion.get(index, image)
+            loop = ["-stream_loop", "-1"] if index in motion else ["-loop", "1"]
+            await self.ffmpeg(
+                [
+                    "-protocol_whitelist",
+                    "file,pipe,crypto",
+                    *loop,
+                    "-i",
+                    str(source),
+                    "-t",
+                    str(duration / len(images)),
+                    "-an",
+                    "-vf",
+                    "scale=1080:1920:force_original_aspect_ratio=decrease,"
+                    "pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p",
+                    "-c:v",
+                    "libx264",
+                    "-preset",
+                    "veryfast",
+                    "-crf",
+                    "20",
+                    name,
+                ],
+                directory,
+            )
+            segments.append(f"file '{name}'")
+        (directory / "motion-slides.txt").write_text("\n".join(segments) + "\n", encoding="utf-8")
+        raw = directory / "slideshow.mp4"
+        args = ["-protocol_whitelist", "file,pipe,crypto", "-f", "concat", "-safe", "1", "-i", "motion-slides.txt"]
+        if audio:
+            args += [
+                "-protocol_whitelist",
+                "file,pipe,crypto",
+                "-stream_loop",
+                "-1",
+                "-i",
+                str(audio),
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+            ]
+        args += ["-c:v", "copy", "-t", str(duration), "-movflags", "+faststart", str(raw)]
         await self.ffmpeg(args, directory)
         return await self.compatible_video(raw, directory)

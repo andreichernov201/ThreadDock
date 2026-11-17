@@ -1,9 +1,11 @@
 import asyncio
 import unittest
+from dataclasses import replace
 from unittest.mock import AsyncMock
 
 from core.errors import MediaError
 from core.models import Asset
+from services.links import normalize_url
 from services.pipeline import KeyedLocks, MediaPipeline
 from tests.support import DatabaseFixture
 
@@ -81,6 +83,14 @@ class PipelineTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         second = await self.pipeline.fetch("https://youtu.be/abc?si=two")
         self.assertEqual(first, second)
         self.pipeline.video.download.assert_awaited_once()
+
+    async def test_missing_motion_is_refetched_instead_of_freezing_a_partial_result(self):
+        first = await self.pipeline.fetch("https://youtu.be/abc")
+        key = normalize_url(first.source_url).cache_key
+        self.database.put_cache(key, replace(first, motion_pending=True), 60)
+        second = await self.pipeline.fetch("https://youtu.be/abc")
+        self.assertEqual(self.pipeline.video.download.await_count, 2)
+        self.assertNotEqual(first.directory, second.directory)
 
     async def test_concurrent_identical_links_download_once(self):
         first, second = await asyncio.gather(

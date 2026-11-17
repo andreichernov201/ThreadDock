@@ -144,6 +144,74 @@ class FFmpegIntegrationTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
             self.assertLessEqual(asset.duration, 5.0)
             self.assertAlmostEqual(asset.duration, min(3, duration), delta=0.1)
 
+    async def test_live_photo_movement_survives_the_second_three_second_slide(self):
+        photos = [self.fixture("one.jpg", "red"), self.fixture("two.jpg", "blue")]
+        clip = self.root / "motion.mp4"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=160x120:rate=15:duration=1",
+                "-c:v",
+                "libx264",
+                str(clip),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=20,
+        )
+        music = self.root / "music.m4a"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=1",
+                "-c:a",
+                "aac",
+                str(music),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=20,
+        )
+        asset, has_audio = await self.tools.slideshow(photos, music, self.root, motion={1: clip})
+        self.assertEqual(asset.duration, 6)
+        self.assertTrue(has_audio)
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-ss",
+                "3",
+                "-i",
+                str(asset.path(self.root)),
+                "-vf",
+                "fps=5,scale=64:64",
+                "-an",
+                "-f",
+                "framemd5",
+                "-",
+            ],
+            capture_output=True,
+            check=True,
+            timeout=20,
+        )
+        hashes = {line.split(",")[-1] for line in result.stdout.decode().splitlines() if not line.startswith("#")}
+        self.assertGreater(len(hashes), 3)
+
 
 @unittest.skipUnless(shutil.which("yt-dlp"), "yt-dlp is not installed")
 class ExtractorOptionsTests(DatabaseFixture, unittest.TestCase):

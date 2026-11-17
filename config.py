@@ -60,6 +60,7 @@ class Settings:
     ffprobe: str = "ffprobe"
     deno: str = "deno"
     cookies_file: Path | None = None
+    tiktok_live_photos: bool = True
     groups_enabled: frozenset[int] = frozenset()
     business_enabled: bool = True
     business_chats: frozenset[int] = frozenset()
@@ -117,6 +118,7 @@ def load_settings(*, require_token: bool = True) -> Settings:
         ffprobe=os.getenv("FFPROBE_EXECUTABLE", "ffprobe"),
         deno=os.getenv("DENO_EXECUTABLE", "deno"),
         cookies_file=(PROJECT_ROOT / cookies).resolve() if cookies else None,
+        tiktok_live_photos=_boolean("TIKTOK_LIVE_PHOTOS", True),
         groups_enabled=_ids("ALLOWED_GROUP_IDS"),
         business_enabled=_boolean("ENABLE_BUSINESS", True),
         business_chats=_ids("BUSINESS_ALLOWED_CHAT_IDS"),

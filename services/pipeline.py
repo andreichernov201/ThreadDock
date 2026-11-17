@@ -80,7 +80,7 @@ class MediaPipeline:
         link = normalize_url(url)
         async with self.locks.hold(link.cache_key):
             cached = self.database.get_cache(link.cache_key)
-            if cached and not force:
+            if cached and not cached.motion_pending and not force:
                 logger.info("media_cache hit=disk platform=%s", link.platform)
                 return cached
             logger.info("media_fetch platform=%s force=%s", link.platform, force)
@@ -173,7 +173,11 @@ class MediaPipeline:
                     target = self.cache / (link.cache_key + "-" + uuid.uuid4().hex[:16])
                     directory.replace(target)
                     bundle = replace(bundle, directory=target)
-                    self.database.put_cache(link.cache_key, bundle, self.settings.cache_ttl)
+                    self.database.put_cache(
+                        link.cache_key,
+                        bundle,
+                        min(60, self.settings.cache_ttl) if bundle.motion_pending else self.settings.cache_ttl,
+                    )
                     return bundle
             except TimeoutError as error:
                 raise MediaError(T.SERVICES_PIPELINE_TIMEOUT, code="timeout", retryable=True) from error
