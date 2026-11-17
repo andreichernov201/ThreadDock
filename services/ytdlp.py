@@ -25,7 +25,7 @@ def build_command(settings: Settings, link: VideoLink, directory: Path, proxy: s
         "--no-cache-dir",
         "--no-playlist",
         "--playlist-items",
-        "1",
+        f"1-{settings.max_photos + 1}",
         "--no-progress",
         "--no-warnings",
         "--quiet",
@@ -69,7 +69,7 @@ def build_command(settings: Settings, link: VideoLink, directory: Path, proxy: s
         f"deno:{shutil.which(settings.deno) or settings.deno}",
         "--write-info-json",
         "--output",
-        str(directory / "source.%(ext)s"),
+        str(directory / "source-%(autonumber)03d.%(ext)s"),
     ]
     if settings.cookies_file:
         # yt-dlp writes back its cookie jar: never modify the operator's original.
@@ -89,7 +89,7 @@ def source_error(stderr: bytes) -> MediaError:
     ):
         return MediaError(T.SERVICES_YTDLP_SOURCE_UNAVAILABLE, code="source_temporary", retryable=True)
     if any(word in text for word in ("403", "captcha", "challenge", "status code 0", "impersonat", "cloudflare")):
-        return MediaError(T.SERVICES_YTDLP_BLOCKED, code="source_blocked")
+        return MediaError(T.SERVICES_YTDLP_BLOCKED, code="source_blocked", retryable=True)
     if any(word in text for word in ("private", "login required", "log in", "sign in", "cookies", "age-restricted")):
         return MediaError(T.SERVICES_YTDLP_RESTRICTED, code="authentication")
     if any(word in text for word in ("max-filesize", "larger than max", "file is larger")):
@@ -105,7 +105,7 @@ class YtDlpAdapter:
     def __init__(self, settings: Settings):
         self.settings = settings
 
-    async def download(self, link: VideoLink, directory: Path) -> tuple[Path, str]:
+    async def download(self, link: VideoLink, directory: Path) -> tuple[Path | list[Path], str]:
         async with SafeProxy() as proxy:
             result = await run_process(
                 build_command(self.settings, link, directory, proxy.url),
@@ -117,18 +117,21 @@ class YtDlpAdapter:
             raise source_error(result.stderr)
         files = [
             path
-            for path in directory.glob("source.*")
+            for path in sorted(directory.glob("source-*"))
             if path.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov", ".flv", ".avi", ".ts"} and not path.is_symlink()
         ]
-        if len(files) != 1 or files[0].stat().st_size == 0:
+        if not files or any(path.stat().st_size == 0 for path in files):
             raise MediaError(T.SERVICES_YTDLP_NO_VIDEO, code="no_video")
-        if files[0].stat().st_size > self.settings.max_download_bytes:
+        if (
+            len(files) > self.settings.max_photos
+            or sum(path.stat().st_size for path in files) > self.settings.max_download_bytes
+        ):
             raise MediaError(T.SERVICES_YTDLP_DOWNLOAD_TOO_LARGE, code="file_too_large")
         title = link.platform
-        metadata = directory / "source.info.json"
+        metadata = next(directory.glob("source-*.info.json"), directory / "missing.json")
         if metadata.is_file() and metadata.stat().st_size < 8 * 1024**2:
             try:
                 title = str(json.loads(metadata.read_text(encoding="utf-8")).get("title") or title)[:500]
             except (ValueError, OSError):
                 pass
-        return files[0], title
+        return files[0] if len(files) == 1 else files, title

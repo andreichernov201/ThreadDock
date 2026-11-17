@@ -1,14 +1,26 @@
 """Telegram transport: scoped file_id cache and durable delivery checkpoints."""
 
+import logging
+
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaDocument, ReplyParameters
+from aiogram.types import (
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputMediaDocument,
+    InputMediaPhoto,
+    InputMediaVideo,
+    ReplyParameters,
+)
 
 from config import Settings
 from core import texts as T
 from core.errors import MediaError, MissingAsset
 from core.models import Asset, Destination, Job, MediaBundle
 from storage.database import Database
+
+logger = logging.getLogger(__name__)
 
 
 def target_options(destination: Destination) -> dict:
@@ -61,14 +73,14 @@ class TelegramDelivery:
     @staticmethod
     def keyboard(job: Job, bundle: MediaBundle) -> InlineKeyboardMarkup | None:
         buttons = []
-        if bundle.originals:
+        if bundle.originals and job.mode not in {"photos", "album"} and (bundle.video or bundle.media):
             buttons.append(
                 InlineKeyboardButton(
                     text=T.SERVICES_DELIVERY_ORIGINAL_PHOTOS.format(value1=len(bundle.originals)),
                     callback_data=f"m:{job.id}:photos",
                 )
             )
-        if bundle.audio:
+        if bundle.audio and job.mode != "audio":
             buttons.append(InlineKeyboardButton(text=T.SERVICES_DELIVERY_AUDIO, callback_data=f"m:{job.id}:audio"))
         return InlineKeyboardMarkup(inline_keyboard=[buttons]) if buttons else None
 
@@ -76,18 +88,28 @@ class TelegramDelivery:
         inputs = [self._input(job, bundle, asset, use_cache=use_cache) for asset in assets]
         options = target_options(job.destination)
         if len(assets) > 1:
-            return await self.bot.send_media_group(
-                **options, media=[InputMediaDocument(media=value) for value in inputs]
-            )
+            media = []
+            for asset, value in zip(assets, inputs, strict=True):
+                if asset.kind == "photo":
+                    media.append(InputMediaPhoto(media=value))
+                elif asset.kind == "video":
+                    media.append(
+                        InputMediaVideo(
+                            media=value,
+                            duration=int(asset.duration),
+                            width=asset.width,
+                            height=asset.height,
+                            supports_streaming=True,
+                        )
+                    )
+                else:
+                    media.append(InputMediaDocument(media=value))
+            return await self.bot.send_media_group(**options, media=media)
         asset, value = assets[0], inputs[0]
         if asset.kind == "video":
-            caption = " ".join(bundle.title.split())[:220]
-            if not bundle.has_audio:
-                caption += T.SERVICES_DELIVERY_NO_AUDIO
             result = await self.bot.send_video(
                 **options,
                 video=value,
-                caption=caption,
                 duration=int(asset.duration),
                 width=asset.width,
                 height=asset.height,
@@ -98,6 +120,8 @@ class TelegramDelivery:
             result = await self.bot.send_audio(
                 **options, audio=value, title=bundle.title[:64], duration=int(asset.duration)
             )
+        elif asset.kind == "photo":
+            result = await self.bot.send_photo(**options, photo=value, reply_markup=self.keyboard(job, bundle))
         else:
             result = await self.bot.send_document(**options, document=value)
         return [result]
@@ -131,6 +155,22 @@ class TelegramDelivery:
             self.database.delivered_piece(job.id, index, [message.message_id for message in messages])
             for asset, message in zip(piece, messages, strict=True):
                 remote = getattr(message, asset.kind, None)
+                if asset.kind == "photo" and remote:
+                    remote = remote[-1]
                 if remote:
                     self.database.save_file_id(self.bot.id, job.cache_key, asset.filename, asset.kind, remote.file_id)
             self.database.remember_delivery(job.cache_key, bundle)
+            if len(piece) > 1 and index == len(pieces) - 1 and self.keyboard(job, bundle):
+                # Albums cannot include reply_markup. Edit the last accepted member;
+                # failure of this optional UI step must never replay accepted media.
+                from aiogram.exceptions import TelegramAPIError
+
+                try:
+                    await self.bot.edit_message_reply_markup(
+                        chat_id=job.destination.chat_id,
+                        message_id=messages[-1].message_id,
+                        business_connection_id=job.destination.business_id or None,
+                        reply_markup=self.keyboard(job, bundle),
+                    )
+                except TelegramAPIError as error:
+                    logger.info("album_keyboard_unavailable type=%s", type(error).__name__)

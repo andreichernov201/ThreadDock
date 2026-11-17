@@ -90,7 +90,12 @@ class Application:
                 requests.append((request_key, link.url, link.cache_key))
         if not self.accepting:
             return 0, [T.SERVICES_APPLICATION_RESTARTING]
-        count = self.database.enqueue(requests, destination, "video", self.settings.queue_capacity) if requests else 0
+        mode = (
+            "album"
+            if destination.chat_id < 0 and self.database.group_photo_mode(destination.chat_id) == "photos"
+            else "video"
+        )
+        count = self.database.enqueue(requests, destination, mode, self.settings.queue_capacity) if requests else 0
         if requests:
             logger.info(
                 "download_submit chat=%s message=%s business=%s links=%s queued=%s suppressed=%s",

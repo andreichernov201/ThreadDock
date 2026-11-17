@@ -1,4 +1,5 @@
 import unittest
+from contextlib import nullcontext
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -14,7 +15,7 @@ from tests.support import DatabaseFixture
 class JobTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         super().setUp()
-        self.pipeline = SimpleNamespace(fetch=AsyncMock(return_value=self.bundle()))
+        self.pipeline = SimpleNamespace(using=lambda bundle: nullcontext(), fetch=AsyncMock(return_value=self.bundle()))
         self.delivery = SimpleNamespace(
             permitted=lambda target: True, cached=lambda job: None, deliver=AsyncMock(), text=AsyncMock()
         )

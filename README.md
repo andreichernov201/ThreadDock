@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Telegram-бот для скачивания медиа по ссылкам и личного архива Telegram Business.
-Python 3.12+, aiogram 3, SQLite, yt-dlp, FFmpeg и Deno. Веб-интерфейс архива —
+Python 3.12+, aiogram 3, SQLite, yt-dlp, gallery-dl, FFmpeg и Deno. Веб-интерфейс архива —
 Telegram Mini App без отдельной frontend-сборки.
 
 ## Возможности
@@ -12,6 +12,10 @@ Telegram Mini App без отдельной frontend-сборки.
 - Видео: TikTok, Instagram Reels, YouTube/Shorts, VK Видео/Клипы, X/Twitter,
   Vimeo, Reddit и видеопубликации Pinterest.
 - TikTok Photo Mode: слайдшоу, исходные фотографии и доступная аудиодорожка.
+- Фотографии и смешанные галереи Instagram, Reddit, Pinterest и X через gallery-dl.
+- Доступные Stories TikTok/Instagram; тип исходного медиа сохраняется.
+- Фото без музыки отправляются фотографиями, без немого MP4 и предупреждений.
+- В группах администратор выбирает `/photos` или `/slideshow`; кнопки доступны всем.
 - Несколько ссылок в сообщении, личные чаты, разрешённые группы и Business Connection.
 - Очередь SQLite, кеш файлов и Telegram `file_id`, восстановление после перезапуска.
 - Подготовка H.264/AAC MP4 и адаптация размера под отправку в Telegram.
@@ -53,7 +57,7 @@ docker compose down
 ## Локальный запуск
 
 Нужны [uv](https://docs.astral.sh/uv/getting-started/installation/), Python 3.12+,
-FFmpeg/ffprobe и Deno 2 в `PATH`. yt-dlp устанавливается из lock-файла:
+FFmpeg/ffprobe и Deno 2 в `PATH`. yt-dlp и gallery-dl устанавливаются из lock-файла:
 
 ```sh
 uv sync --locked --extra media
@@ -102,6 +106,7 @@ CI проверяет Python 3.12–3.15 на Linux и Python 3.14 на Windows/
 | --- | --- |
 | Загрузчик | `/start`, `/help`, `/status` |
 | Разрешение групп | `/enable`, `/disable` — администратору группы |
+| Фотопубликации группы | `/photos`, `/slideshow` — администратору группы |
 | Архив | `/archive`, `/archive_on`, `/stats`, `/export`, `/pause`, `/mute`, `/delete_me` |
 
 В группах обработка по умолчанию выключена. Для обычных сообщений отключи
@@ -124,7 +129,7 @@ Privacy Mode у BotFather и добавь бота заново либо наз�
 | `QUEUE_CAPACITY` | `200` | Вместимость активной очереди |
 | `MAX_DOWNLOAD_MB` | `500` МиБ | Размер входного медиа |
 | `MAX_UPLOAD_MB` | `49` МБ | Размер отправляемого файла |
-| `CACHE_TTL_HOURS` | `168` | Срок кеширования |
+| `CACHE_TTL_HOURS` | `72` | Срок кеширования (максимум 72 часа) |
 | `ARCHIVE_STORAGE_MB` | `20480` МиБ | Общий бюджет локальных вложений архива |
 | `ARCHIVE_PUBLIC_URL` | пусто | HTTPS-адрес Mini App |
 
@@ -132,6 +137,10 @@ Privacy Mode у BotFather и добавь бота заново либо наз�
 `COOKIES_FILE`. Docker-overlay: `compose.cookies.yaml`. Cookies, токен и база
 не должны попадать в Git или Docker-образ. Версия yt-dlp закреплена в
 `pyproject.toml` и `uv.lock`; Docker использует те же зависимости.
+
+gallery-dl (GPL-2.0) запускается отдельной программой. Его код не копируется в
+ThreadDock. Исходники и лицензия: https://github.com/mikf/gallery-dl.
+Сетевая приёмка и ограничения Live Photo: [docs/downloader-validation.md](docs/downloader-validation.md).
 
 ## Данные и восстановление
 

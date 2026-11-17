@@ -31,9 +31,10 @@ async def media_action(query: CallbackQuery, app: Application) -> None:
     if connection:
         allowed.add(connection["owner_id"])
     if (
-        query.from_user.id not in allowed
+        (query.message.chat.type not in {"group", "supergroup"} and query.from_user.id not in allowed)
         or query.message.chat.id != row["chat_id"]
         or (query.message.business_connection_id or "") != row["business_id"]
+        or query.message.message_thread_id != row["thread_id"]
     ):
         await query.answer(T.HANDLERS_CALLBACKS_SENDER_ONLY, show_alert=True)
         return

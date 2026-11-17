@@ -63,6 +63,17 @@ class Database:
         if version > 2:
             raise RuntimeError("Database schema is newer than this application")
         self.connection.executescript(SCHEMA)
+        group_columns = {row[1] for row in self.connection.execute("PRAGMA table_info(groups)")}
+        if "photo_mode" not in group_columns:
+            self.connection.execute("ALTER TABLE groups ADD COLUMN photo_mode TEXT NOT NULL DEFAULT 'slideshow'")
+        cache_columns = {row[1] for row in self.connection.execute("PRAGMA table_info(cache)")}
+        if "saved_at" not in cache_columns:
+            self.connection.execute("ALTER TABLE cache ADD COLUMN saved_at REAL NOT NULL DEFAULT 0")
+            # Old entries had no birth timestamp. Expire conservatively; early
+            # eviction is allowed, extending old media retention is not.
+            self.connection.execute("UPDATE cache SET saved_at=min(accessed_at,expires_at-7*86400)")
+        self.connection.execute("UPDATE cache SET expires_at=min(expires_at,saved_at+72*3600)")
+        self.connection.commit()
         columns = {row[1] for row in self.connection.execute("PRAGMA table_info(jobs)")}
         if "retryable" not in columns:
             self.connection.execute("ALTER TABLE jobs ADD COLUMN retryable INTEGER NOT NULL DEFAULT 0")
@@ -307,10 +318,15 @@ class Database:
             return None
 
     def put_cache(self, key: str, bundle: MediaBundle, ttl: int) -> None:
+        now = time.time()
         with self.connection:
             self.connection.execute(
-                "INSERT OR REPLACE INTO cache VALUES (?,?,?,?)",
-                (key, bundle.serialize(self.data_root), time.time() + ttl, time.time()),
+                """INSERT INTO cache(key,bundle,expires_at,accessed_at,saved_at) VALUES (?,?,?,?,?)
+                ON CONFLICT(key) DO UPDATE SET bundle=excluded.bundle,accessed_at=excluded.accessed_at,
+                expires_at=CASE WHEN cache.expires_at<=excluded.saved_at THEN excluded.expires_at
+                ELSE min(cache.expires_at,excluded.expires_at) END,
+                saved_at=CASE WHEN cache.expires_at<=excluded.saved_at THEN excluded.saved_at ELSE cache.saved_at END""",
+                (key, bundle.serialize(self.data_root), now + min(ttl, 72 * 3600), now, now),
             )
 
     def delete_cache(self, key: str) -> None:
@@ -346,8 +362,14 @@ class Database:
             WHERE NOT EXISTS(SELECT 1 FROM jobs j WHERE j.cache_key=c.key AND j.status IN ('running','sending'))
             ORDER BY accessed_at""").fetchall()
 
-    def cache_keys(self) -> set[str]:
-        return {row[0] for row in self.connection.execute("SELECT key FROM cache")}
+    def cache_keys(self) -> set[Path]:
+        paths = set()
+        for row in self.connection.execute("SELECT bundle FROM cache"):
+            try:
+                paths.add(MediaBundle.deserialize(row[0], self.data_root).directory)
+            except (ValueError, TypeError, KeyError):
+                continue
+        return paths
 
     def file_id(self, bot_id: int, key: str, filename: str, kind: str) -> str | None:
         row = self.connection.execute(
@@ -375,7 +397,25 @@ class Database:
 
     def set_group(self, chat_id: int, enabled: bool) -> None:
         with self.connection:
-            self.connection.execute("INSERT OR REPLACE INTO groups VALUES (?,?)", (chat_id, int(enabled)))
+            self.connection.execute(
+                """INSERT INTO groups(chat_id,enabled) VALUES (?,?)
+                ON CONFLICT(chat_id) DO UPDATE SET enabled=excluded.enabled""",
+                (chat_id, int(enabled)),
+            )
+
+    def group_photo_mode(self, chat_id: int) -> str:
+        row = self.connection.execute("SELECT photo_mode FROM groups WHERE chat_id=?", (chat_id,)).fetchone()
+        return row[0] if row else "slideshow"
+
+    def set_group_photo_mode(self, chat_id: int, mode: str) -> None:
+        if mode not in {"photos", "slideshow"}:
+            raise ValueError("Invalid group photo mode")
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO groups(chat_id,enabled,photo_mode) VALUES (?,0,?)
+                ON CONFLICT(chat_id) DO UPDATE SET photo_mode=excluded.photo_mode""",
+                (chat_id, mode),
+            )
 
     def save_connection(self, identifier: str, owner_id: int, enabled: bool, can_reply: bool) -> None:
         with self.connection:

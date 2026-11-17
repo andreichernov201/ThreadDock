@@ -89,11 +89,13 @@ class JobQueue:
                 bundle = await self.pipeline.fetch(job.url)
             try:
                 stage = "delivery"
-                await self.delivery.deliver(job, bundle)
+                with self.pipeline.using(bundle):
+                    await self.delivery.deliver(job, bundle)
             except MissingAsset:
                 bundle = await self.pipeline.fetch(job.url, force=True)
                 row = self.database.get_job(job.id)
-                await self.delivery.deliver(replace(job, progress=row["progress"]), bundle)
+                with self.pipeline.using(bundle):
+                    await self.delivery.deliver(replace(job, progress=row["progress"]), bundle)
             self.database.complete_job(job.id)
             logger.info("download_done elapsed_ms=%s", round((time.monotonic() - started) * 1000))
         except asyncio.CancelledError:
@@ -101,7 +103,12 @@ class JobQueue:
             self.database.status(job.id, "uncertain" if row["status"] == "sending" else "queued", "shutdown")
             raise
         except TelegramRetryAfter as error:
-            self.database.status(job.id, "queued", "telegram_rate_limit", delay=error.retry_after + 1)
+            if job.attempts <= self.settings.retries:
+                self.database.status(job.id, "queued", "telegram_rate_limit", delay=error.retry_after + 1)
+            else:
+                self.database.status(job.id, "failed", "telegram_rate_limit")
+                self.database.offer_retry(job.id)
+                await self._notify(job, T.DOWNLOAD_TRY_LATER, retry=True)
         except (TelegramNetworkError, TelegramServerError):
             self.database.status(job.id, "uncertain", "delivery_uncertain")
             logger.warning("download_uncertain stage=%s reason=telegram_network", stage)
@@ -118,7 +125,23 @@ class JobQueue:
                 self.database.status(job.id, "failed", error.code)
                 if error.retryable:
                     self.database.offer_retry(job.id)
-                await self._notify(job, str(error), retry=error.retryable)
+                unavailable = {
+                    "unavailable",
+                    "authentication",
+                    "source_blocked",
+                    "source_http",
+                    "photo_metadata_missing",
+                }
+                message = (
+                    T.DOWNLOAD_TOO_LARGE
+                    if error.code == "file_too_large"
+                    else T.DOWNLOAD_TRY_LATER
+                    if error.retryable
+                    else T.DOWNLOAD_UNAVAILABLE
+                    if error.code in unavailable
+                    else T.DOWNLOAD_FAILED
+                )
+                await self._notify(job, message, retry=error.retryable)
             logger.warning(
                 "download_failed stage=%s code=%s retryable=%s elapsed_ms=%s",
                 stage,

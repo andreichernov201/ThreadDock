@@ -5,7 +5,8 @@ import logging
 import shutil
 import tempfile
 import time
-from contextlib import asynccontextmanager
+import uuid
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import replace
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from config import Settings
 from core import texts as T
 from core.errors import MediaError
 from core.models import MediaBundle
+from services.gallery import GalleryAdapter
 from services.http import PublicHttp
 from services.links import normalize_url
 from services.media import MediaTools
@@ -49,7 +51,9 @@ class MediaPipeline:
         self.tools = MediaTools(settings)
         self.video = YtDlpAdapter(settings)
         self.photos = TikTokPhotos(settings, http, self.tools)
+        self.gallery = GalleryAdapter(settings, http, self.tools)
         self.locks = KeyedLocks()
+        self.leases: dict[Path, int] = {}
         self.work = settings.data_dir / "work"
         self.cache = settings.data_dir / "cache"
         self.work.mkdir(parents=True, exist_ok=True)
@@ -60,6 +64,17 @@ class MediaPipeline:
         for directory in self.work.iterdir():
             if directory.is_dir() and not directory.is_symlink():
                 remove_directory(directory, self.work)
+
+    @contextmanager
+    def using(self, bundle: MediaBundle):
+        path = bundle.directory.resolve()
+        self.leases[path] = self.leases.get(path, 0) + 1
+        try:
+            yield
+        finally:
+            self.leases[path] -= 1
+            if not self.leases[path]:
+                del self.leases[path]
 
     async def fetch(self, url: str, *, force: bool = False) -> MediaBundle:
         link = normalize_url(url)
@@ -87,11 +102,23 @@ class MediaPipeline:
                     if link.platform == "TikTok" and "/video/" not in link.url:
                         try:
                             bundle = await self.photos.download(link, directory)
-                        except PhotoModeError:
-                            raise
                         except MediaError as error:
                             photo_error = error
                             logger.info("tiktok_photo_probe_failed code=%s", error.code)
+                    if bundle is None and link.platform in {"Instagram", "Reddit", "Pinterest", "TikTok", "X"}:
+                        # For ordinary TikTok videos, prefer the quality-aware video
+                        # extractor; gallery extraction is its independent fallback.
+                        prefer_gallery = (
+                            link.platform != "TikTok" or isinstance(photo_error, PhotoModeError) or "/stor" in link.url
+                        )
+                        if prefer_gallery:
+                            try:
+                                bundle = await self.gallery.download(link, directory)
+                            except MediaError as error:
+                                logger.info("gallery_probe_failed platform=%s code=%s", link.platform, error.code)
+                                if isinstance(photo_error, PhotoModeError):
+                                    raise photo_error from error
+                                photo_error = photo_error or error
                     if bundle is None:
                         try:
                             source, title = await self.video.download(link, directory)
@@ -99,13 +126,34 @@ class MediaPipeline:
                             if link.platform == "TikTok" and "/video/" in link.url:
                                 # TikTok sometimes serves photo posts at a /video/ route.
                                 # Only check after video extraction failed.
-                                photo_bundle = await self.photos.download(link, directory)
-                                if photo_bundle is not None:
-                                    bundle = photo_bundle
+                                try:
+                                    bundle = await self.photos.download(link, directory)
+                                except MediaError as error:
+                                    photo_error = error
+                                    logger.info("tiktok_photo_fallback_failed code=%s", error.code)
+                            if bundle is None:
+                                if link.platform in {"TikTok", "X"}:
+                                    try:
+                                        bundle = await self.gallery.download(link, directory)
+                                    except MediaError as error:
+                                        logger.info("gallery_fallback_failed code=%s", error.code)
                             if bundle is None:
                                 if photo_error and video_error.code == "extractor_failed":
                                     raise photo_error from video_error
                                 raise
+                        if bundle is None:
+                            if isinstance(source, list):
+                                from core.models import Asset
+
+                                media = []
+                                for index, item in enumerate(source):
+                                    asset, _ = await self.tools.compatible_video(item, directory)
+                                    target = directory / f"media-{index:03}.mp4"
+                                    asset.path(directory).replace(target)
+                                    media.append(Asset(target.name, "video", asset.duration, asset.width, asset.height))
+                                bundle = MediaBundle(
+                                    directory, link.url, link.platform, title, None, media=tuple(media)
+                                )
                         if bundle is None:
                             video, has_audio = await self.tools.compatible_video(source, directory)
                             try:
@@ -117,16 +165,12 @@ class MediaPipeline:
                             bundle = MediaBundle(
                                 directory, link.url, link.platform, title, video, audio=audio, has_audio=has_audio
                             )
-                    keep = {
-                        asset.filename
-                        for asset in (bundle.video, *bundle.originals) + ((bundle.audio,) if bundle.audio else ())
-                    }
+                    keep = {asset.filename for asset in bundle.assets}
                     for path in directory.iterdir():
                         if path.is_file() and path.name not in keep:
                             path.unlink()
-                    target = self.cache / link.cache_key
-                    if target.exists():
-                        remove_directory(target, self.cache)
+                    # Never replace files another chat may currently be sending.
+                    target = self.cache / (link.cache_key + "-" + uuid.uuid4().hex[:16])
                     directory.replace(target)
                     bundle = replace(bundle, directory=target)
                     self.database.put_cache(link.cache_key, bundle, self.settings.cache_ttl)
@@ -143,6 +187,12 @@ class MediaPipeline:
         total = directory_size(self.cache)
         free = shutil.disk_usage(self.settings.data_dir).free
         for row in self.database.cache_candidates():
+            try:
+                candidate = MediaBundle.deserialize(row["bundle"], self.settings.data_dir)
+                if candidate.directory in self.leases:
+                    continue
+            except (ValueError, KeyError, TypeError):
+                pass
             if row["expires_at"] > time.time() and total <= self.settings.cache_max_bytes and free >= needed_free:
                 continue
             try:
@@ -157,14 +207,14 @@ class MediaPipeline:
                 pass
             self.database.delete_cache(row["key"])
         # A crash between an atomic directory rename and SQLite commit can leave an orphan.
-        known = self.database.cache_keys()
+        known = self.database.cache_keys() | self.leases.keys()
         for directory in self.cache.iterdir():
             if (
                 directory.is_dir()
                 and not directory.is_symlink()
-                and len(directory.name) == 64
-                and all(char in "0123456789abcdef" for char in directory.name)
-                and directory.name not in known
+                and len(directory.name.split("-")[0]) == 64
+                and all(char in "0123456789abcdef-" for char in directory.name)
+                and directory.resolve() not in known
             ):
                 remove_directory(directory, self.cache)
         self.database.prune_jobs(self.settings.retention_days)

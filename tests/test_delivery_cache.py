@@ -1,4 +1,5 @@
 import unittest
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -17,7 +18,7 @@ class DeliveryCacheTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         super().setUp()
         self.bot = SimpleNamespace(id=123, send_video=AsyncMock(return_value=sent()))
         self.delivery = TelegramDelivery(self.bot, self.database, self.settings)
-        self.pipeline = SimpleNamespace(fetch=AsyncMock())
+        self.pipeline = SimpleNamespace(using=lambda bundle: nullcontext(), fetch=AsyncMock())
 
     async def saved_video(self):
         job = self.job()
