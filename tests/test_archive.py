@@ -334,6 +334,38 @@ class RepositoryTests(ArchiveFixture, unittest.TestCase):
 
 
 class WebTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_owner_cannot_read_or_mutate_foreign_resources(self):
+        own = self.ingest(body="OWN", archived=True)
+        foreign = self.ingest(owner=20, body="FOREIGNSECRET", media=[self.photo()], archived=True)
+        chat = self.repo.message(20, foreign)["chat_id"]
+        media = self.repo.message(20, foreign)["media"][0]["id"]
+        task = self.repo.enqueue(20, "export", {})
+        for route in (
+            f"/api/messages/{foreign}",
+            f"/api/tasks/{task}",
+            f"/api/media/{media}/file",
+            f"/api/stats?chat={chat}",
+        ):
+            self.assertEqual((await self.request("GET", route)).status, 404, route)
+        for route, body in (
+            (f"/api/media/{media}/send", {}),
+            (f"/api/media/{media}/retry", {}),
+            (f"/api/messages/{foreign}/favorite", {"value": True}),
+            ("/api/export", {"format": "json", "chat_id": chat}),
+            (f"/api/chats/{chat}/reply", {}),
+        ):
+            # Multipart reply validation may reject before resolving its chat.
+            response = await self.request("POST", route, body)
+            self.assertIn(response.status, {400, 404}, route)
+        for route in (f"/api/events?chat={chat}", f"/api/gallery?chat={chat}", "/api/search?q=FOREIGNSECRET"):
+            response = await self.request("GET", route)
+            self.assertNotIn("FOREIGNSECRET", response.text)
+            self.assertEqual(json.loads(response.body)["items"], [])
+        response = await self.request("GET", "/api/stats?owner_id=20")
+        self.assertEqual(json.loads(response.body)["totals"]["messages"], 1)
+        self.assertIsNotNone(self.repo.message(10, own))
+        self.assertFalse(self.repo.message(20, foreign)["favorite"])
+
     def setUp(self):
         super().setUp()
         self.app = create_web_app(self.service)

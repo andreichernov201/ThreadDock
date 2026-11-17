@@ -662,6 +662,148 @@ function renderStats() {
       ).join(""),
     ),
   );
+  document.querySelector(".main").insertAdjacentHTML(
+    "beforeend",
+    extendedStats(data),
+  );
+  document.querySelector("#stats-days").insertAdjacentHTML(
+    "beforeend",
+    `<option value="3660">${e(t(COPY.INSIGHT_TEN_YEARS))}</option>`,
+  );
+  document.querySelector("#stats-days").closest(".top-actions")
+    .insertAdjacentHTML(
+      "afterbegin",
+      `<select id="stats-chat" aria-label="${
+        e(t(COPY.CONVERSATION))
+      }"><option value="0">${e(t(COPY.ALL_CHATS))}</option>${
+        S.chats.map((chat) =>
+          `<option value="${chat.id}" ${S.chat === chat.id ? "selected" : ""}>${
+            e(chat.title)
+          }</option>`
+        ).join("")
+      }</select>`,
+    );
+  document.querySelector("#stats-days").value = S.statsDays;
+  document.querySelector("#stats-start").value = S.statsStart;
+  document.querySelector("#stats-end").value = S.statsEnd;
+}
+
+function extendedStats(data) {
+  const a = data.insights;
+  if (!a) return "";
+  const card = (title, body) =>
+    `<section class="panel"><div class="panel-header"><h2>${
+      e(t(title))
+    }</h2></div><div class="chart-wrap">${body}</div></section>`;
+  const bars = (items, label, value) => {
+    const max = Math.max(...items.map(value), 1);
+    return `<div class="bar-list">${
+      items.map((item) =>
+        `<div class="bar-row"><div class="bar-label"><span>${
+          e(label(item))
+        }</span><strong>${
+          fmt(value(item))
+        }</strong></div><meter min="0" max="${max}" value="${
+          value(item)
+        }"></meter></div>`
+      ).join("")
+    }</div>`;
+  };
+  const labels = COPY.INSIGHT_WEEKDAYS;
+  const c = a.content;
+  const duration = (value) =>
+    value == null ? "—" : `${Math.round(value / 60)} ${t(COPY.MINUTE_UNIT)}`;
+  const metrics = [
+    [COPY.INSIGHT_ACTIVE_DAYS, c.active_days],
+    [COPY.INSIGHT_STREAK, a.longest_active_streak],
+    [COPY.INSIGHT_CHARACTERS, c.characters],
+    [COPY.INSIGHT_MEAN_LENGTH, Math.round(c.mean_characters)],
+    [COPY.INSIGHT_LINKS, c.messages_with_links],
+    [COPY.INSIGHT_REPLIES, c.replies],
+    [COPY.INSIGHT_EDIT_EVENTS, a.edit_events],
+    [COPY.INSIGHT_LONGEST, c.longest_characters],
+  ];
+  return `<div class="insight-note">${
+    e(t(COPY.INSIGHT_SCOPE))
+  }</div><div class="insight-metrics">${
+    metrics.map(([label, value]) =>
+      `<div class="panel insight-metric"><small>${e(t(label))}</small><strong>${
+        fmt(value)
+      }</strong></div>`
+    ).join("")
+  }</div><div class="analytics-grid">${
+    card(
+      COPY.INSIGHT_HOURS,
+      bars(
+        Array.from(
+          { length: 24 },
+          (_, hour) => ({
+            hour,
+            messages: a.hourly.find((x) => x.hour === hour)?.messages || 0,
+          }),
+        ),
+        (x) => `${x.hour}:00`,
+        (x) => x.messages,
+      ),
+    ) +
+    card(
+      COPY.INSIGHT_DAYS,
+      bars(
+        Array.from(
+          { length: 7 },
+          (_, weekday) => ({
+            weekday,
+            messages: a.weekdays.find((x) => x.weekday === weekday)?.messages ||
+              0,
+          }),
+        ),
+        (x) => labels[x.weekday],
+        (x) => x.messages,
+      ),
+    ) +
+    card(
+      COPY.INSIGHT_CHATS,
+      bars(a.top_chats, (x) => x.title, (x) => x.messages),
+    ) +
+    card(
+      COPY.INSIGHT_MEDIA,
+      bars(
+        a.media_types,
+        (x) => COPY.INSIGHT_MEDIA_NAMES[x.kind] || x.kind,
+        (x) => x.files,
+      ),
+    ) +
+    card(
+      COPY.INSIGHT_EVENTS,
+      bars(
+        a.event_counts,
+        (x) => COPY.INSIGHT_EVENT_NAMES[x.kind] || x.kind,
+        (x) => x.count,
+      ),
+    ) +
+    card(
+      COPY.INSIGHT_RESPONSE,
+      `<p class="muted">${
+        e(t(COPY.INSIGHT_RESPONSE_METHOD))
+      }</p><dl class="record-details">${
+        [["outgoing", COPY.OUTGOING], ["incoming", COPY.INCOMING]].map((
+          [key, label],
+        ) =>
+          `<div><dt>${e(t(label))}</dt><dd>${
+            duration(a.responses[key].median_seconds)
+          } · P90 ${duration(a.responses[key].p90_seconds)}<br><small>n=${
+            fmt(a.responses[key].count)
+          }</small></dd></div>`
+        ).join("")
+      }</dl>${
+        data.sample_is_partial
+          ? `<p>${e(t(COPY.SAMPLE_NOTICE))}${fmt(data.sampled_messages)}</p>`
+          : ""
+      }`,
+    )
+  }</div><p class="insight-note">${e(t(COPY.INSIGHT_COMPARISON))}: ${
+    fmt(data.previous.messages)
+  } → ${fmt(data.totals.messages)}</p>`;
 }
 const checked = (value) => value ? "checked" : "";
 function toggle(name, label, note = "") {
@@ -795,9 +937,7 @@ async function load(append = false) {
       return;
     }
     if (S.view === "stats") {
-      S.stats = await api.request("/api/stats?days=30");
-      S.statsDays = "30";
-      S.statsStart = S.statsEnd = "";
+      S.stats = await api.request(statsPath());
       render();
       return;
     }
@@ -830,6 +970,19 @@ async function navigate(view) {
   S.cursor = null;
   S.items = [];
   await load();
+}
+
+function statsPath() {
+  if (Boolean(S.statsStart) !== Boolean(S.statsEnd)) {
+    throw new Error(COPY.INSIGHT_DATE_PAIR);
+  }
+  const offset = (S.owner?.utc_offset || 0) * 60;
+  const period = S.statsStart && S.statsEnd
+    ? `start=${Date.parse(S.statsStart + "T00:00:00Z") / 1000 - offset}&end=${
+      Date.parse(S.statsEnd + "T00:00:00Z") / 1000 - offset + 86400
+    }`
+    : `days=${S.statsDays}`;
+  return `/api/stats?${period}&chat=${S.chat || 0}`;
 }
 function openModal(title, body, actions = "") {
   if (S.locked) return;
@@ -1249,12 +1402,11 @@ document.addEventListener("click", async (event) => {
       const start = document.querySelector("#stats-start").value,
         end = document.querySelector("#stats-end").value,
         days = document.querySelector("#stats-days").value;
-      const path = start && end
-        ? `/api/stats?start=${
-          new Date(start + "T00:00:00").getTime() / 1000
-        }&end=${new Date(end + "T23:59:59").getTime() / 1000}`
-        : `/api/stats?days=${days}`;
-      S.stats = await api.request(path);
+      S.statsDays = days;
+      S.statsStart = start;
+      S.statsEnd = end;
+      S.chat = Number(document.querySelector("#stats-chat").value);
+      S.stats = await api.request(statsPath());
       renderStats();
       document.querySelector("#stats-days").value = days;
       document.querySelector("#stats-start").value = start;

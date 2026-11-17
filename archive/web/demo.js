@@ -353,6 +353,48 @@ export function createDemoApi() {
       }
       if (route === "/api/stats") {
         return {
+          insights: {
+            content: {
+              active_days: 12,
+              characters: 32040,
+              mean_characters: 25,
+              longest_characters: 640,
+              messages_with_links: 38,
+              replies: 92,
+            },
+            hourly: Array.from(
+              { length: 24 },
+              (_, hour) => ({
+                hour,
+                messages: hour > 8 && hour < 23 ? (hour * 17) % 120 : 0,
+              }),
+            ),
+            weekdays: Array.from(
+              { length: 7 },
+              (_, weekday) => ({ weekday, messages: 120 + weekday * 23 }),
+            ),
+            top_chats: chats.filter((chat) =>
+              !Number(url.searchParams.get("chat")) ||
+              chat.id === Number(url.searchParams.get("chat"))
+            ).map((chat) => ({
+              title: chat.title,
+              messages: chat.message_count,
+            })),
+            media_types: [{ kind: "photo", files: 42 }, {
+              kind: "video",
+              files: 18,
+            }, { kind: "voice", files: 11 }],
+            event_counts: [{ kind: "edited", count: 92 }, {
+              kind: "deleted",
+              count: 38,
+            }],
+            edit_events: 92,
+            longest_active_streak: 6,
+            responses: {
+              incoming: { count: 65, median_seconds: 240, p90_seconds: 1080 },
+              outgoing: { count: 55, median_seconds: 120, p90_seconds: 720 },
+            },
+          },
           totals: {
             messages: 1284,
             chats: 3,
