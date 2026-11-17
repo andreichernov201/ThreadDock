@@ -252,8 +252,15 @@ class MediaTools:
     async def slideshow(
         self, images: list[Path], audio: Path | None, directory: Path, *, motion: dict[int, Path] | None = None
     ) -> tuple[Asset, bool]:
-        duration = len(images) * 3.0
-        if audio and len(images) == 1:
+        slide_duration = 3.0
+        if motion:
+            durations = [(await self.probe(path)).duration for path in motion.values()]
+            if not all(math.isfinite(value) and value > 0 for value in durations):
+                raise MediaError(T.SERVICES_MEDIA_INVALID_SLIDESHOW_DURATION, code="duration_limit")
+            # Every slide follows the longest live photo, with a two-second floor.
+            slide_duration = max(2.0, *durations)
+        duration = len(images) * slide_duration
+        if audio and len(images) == 1 and not motion:
             duration = min(duration, (await self.probe(audio)).duration)
         if not images or not 0 < duration <= self.settings.max_duration:
             raise MediaError(T.SERVICES_MEDIA_INVALID_SLIDESHOW_DURATION, code="duration_limit")

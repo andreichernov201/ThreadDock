@@ -9,7 +9,6 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InputMediaDocument,
-    InputMediaLivePhoto,
     InputMediaPhoto,
     InputMediaVideo,
     ReplyParameters,
@@ -93,12 +92,6 @@ class TelegramDelivery:
             for asset, value in zip(assets, inputs, strict=True):
                 if asset.kind == "photo":
                     media.append(InputMediaPhoto(media=value))
-                elif asset.kind == "live_photo":
-                    media.append(
-                        InputMediaLivePhoto(
-                            media=value, photo=self._input(job, bundle, asset.parts[1], use_cache=use_cache)
-                        )
-                    )
                 elif asset.kind == "video":
                     media.append(
                         InputMediaVideo(
@@ -129,13 +122,6 @@ class TelegramDelivery:
             )
         elif asset.kind == "photo":
             result = await self.bot.send_photo(**options, photo=value, reply_markup=self.keyboard(job, bundle))
-        elif asset.kind == "live_photo":
-            result = await self.bot.send_live_photo(
-                **options,
-                live_photo=value,
-                photo=self._input(job, bundle, asset.parts[1], use_cache=use_cache),
-                reply_markup=self.keyboard(job, bundle),
-            )
         else:
             result = await self.bot.send_document(**options, document=value)
         return [result]
@@ -175,10 +161,6 @@ class TelegramDelivery:
                     remote = remote[-1]
                 if remote:
                     self.database.save_file_id(self.bot.id, job.cache_key, asset.filename, asset.kind, remote.file_id)
-                    if asset.kind == "live_photo" and remote.photo:
-                        self.database.save_file_id(
-                            self.bot.id, job.cache_key, asset.photo_filename, "photo", remote.photo[-1].file_id
-                        )
             self.database.remember_delivery(job.cache_key, bundle)
             if len(piece) > 1 and index == len(pieces) - 1 and self.keyboard(job, bundle):
                 # Albums cannot include reply_markup. Edit the last accepted member;
