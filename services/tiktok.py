@@ -17,7 +17,7 @@ from services.http import PublicHttp
 from services.links import VideoLink
 from services.media import MediaTools
 from services.processes import directory_size
-from services.tiktok_live import public_live_photos
+from services.tiktok_live import public_live_photos, public_video_urls
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +148,7 @@ def parse_video_page(html: str, expected_id: str | None = None) -> tuple[str, tu
                     and (expected_id is None or identifier == expected_id)
                     and isinstance(video, dict)
                     and not node.get("imagePost")
+                    and not any(node.get(key) for key in ("privateItem", "is_private", "forFriend", "secret"))
                 ):
                     urls = []
                     variants = video.get("bitrateInfo") or []
@@ -224,7 +225,16 @@ class TikTokPhotos:
                     last_error = error
                     logger.info("tiktok_video_candidate_failed code=%s", error.code)
             else:
-                raise last_error or MediaError(T.SERVICES_YTDLP_DOWNLOAD_FAILED, code="no_video")
+                fallback = await public_video_urls(self.http, match[1]) if match else ()
+                for url in fallback:
+                    try:
+                        await self._download_candidates((url,), source, self.settings.max_download_bytes)
+                        asset, has_audio = await self.media.compatible_video(source, directory)
+                        break
+                    except MediaError as error:
+                        last_error = error
+                else:
+                    raise last_error or MediaError(T.SERVICES_YTDLP_DOWNLOAD_FAILED, code="no_video")
             try:
                 async with asyncio.timeout(min(30, self.settings.process_timeout)):
                     audio = await self.media.extract_audio(source, directory)
