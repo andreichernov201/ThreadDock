@@ -7,12 +7,46 @@ from tests.support import DatabaseFixture
 
 
 class DatabaseTests(DatabaseFixture, unittest.TestCase):
+    def test_explicit_retry_gets_new_budget_but_automatic_retry_does_not(self):
+        job = self.job()
+        self.database.connection.execute("UPDATE jobs SET requested_at=? WHERE id=?", (time.time() - 120, job.id))
+        self.database.connection.commit()
+        self.database.status(job.id, "queued", "network", delay=2)
+        self.assertEqual(self.database.request_remaining(job.id, 60), 0)
+        self.database.status(job.id, "failed", "request_expired")
+        self.database.offer_retry(job.id)
+        self.assertTrue(self.database.retry_job(job.id, job.attempts, 100))
+        self.assertGreater(self.database.request_remaining(job.id, 60), 59)
+
+    def test_old_schema_migration_keeps_original_request_age(self):
+        from storage.database import Database
+
+        job = self.job()
+        original = self.database.get_job(job.id)["created_at"]
+        self.database.connection.execute("ALTER TABLE jobs DROP COLUMN requested_at")
+        self.database.connection.commit()
+        self.database.close()
+        self.database = Database(self.root / "test.sqlite3", self.root)
+        self.addCleanup(self.database.close)
+        self.assertEqual(self.database.get_job(job.id)["requested_at"], original)
+
     def test_pending_same_video_in_one_chat_is_deduplicated(self):
         first = self.job()
         self.assertEqual(
             self.database.enqueue([("different-message", first.url, first.cache_key)], first.destination, "video", 100),
             0,
         )
+
+    def test_explicit_media_action_refreshes_only_its_own_budget(self):
+        source = self.job()
+        self.database.complete_job(source.id)
+        self.database.connection.execute("UPDATE jobs SET requested_at=? WHERE id=?", (time.time() - 120, source.id))
+        self.database.connection.commit()
+        self.assertEqual(self.database.request_media(source.id, "photos", 100), "accepted")
+        photos = self.database.claim()
+        self.assertEqual(photos.mode, "photos")
+        self.assertGreater(self.database.request_remaining(photos.id, 60), 59)
+        self.assertEqual(self.database.request_remaining(source.id, 60), 0)
 
     def test_success_cancels_legacy_duplicates_but_preserves_other_chats_and_modes(self):
         first = self.job()

@@ -24,6 +24,8 @@ class ConfigurationTests(unittest.TestCase):
         for environment in (
             {"DOWNLOAD_WORKERS": "0"},
             {"DOWNLOAD_TIMEOUT_SECONDS": "nan"},
+            {"REQUEST_TIMEOUT_SECONDS": "61"},
+            {"REQUEST_TIMEOUT_SECONDS": "0"},
             {"ENABLE_BUSINESS": "maybe"},
             {"ALLOWED_GROUP_IDS": "text"},
         ):

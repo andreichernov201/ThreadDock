@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS jobs (
  requester_id INTEGER NOT NULL, thread_id INTEGER, business_id TEXT NOT NULL DEFAULT '',
  mode TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', attempts INTEGER NOT NULL DEFAULT 0,
  progress INTEGER NOT NULL DEFAULT 0, available_at REAL NOT NULL DEFAULT 0,
- retryable INTEGER NOT NULL DEFAULT 0,
+ retryable INTEGER NOT NULL DEFAULT 0, requested_at REAL NOT NULL DEFAULT 0,
  created_at REAL NOT NULL, updated_at REAL NOT NULL, error_code TEXT
 );
 CREATE INDEX IF NOT EXISTS jobs_claim ON jobs(status, available_at, id);
@@ -78,6 +78,10 @@ class Database:
         if "retryable" not in columns:
             self.connection.execute("ALTER TABLE jobs ADD COLUMN retryable INTEGER NOT NULL DEFAULT 0")
             self.connection.commit()
+        if "requested_at" not in columns:
+            with self.connection:
+                self.connection.execute("ALTER TABLE jobs ADD COLUMN requested_at REAL NOT NULL DEFAULT 0")
+                self.connection.execute("UPDATE jobs SET requested_at=created_at")
         with self.connection:
             self.connection.execute(
                 """INSERT OR IGNORE INTO telegram_cache(key,bundle,accessed_at)
@@ -144,7 +148,7 @@ class Database:
             if count + len(new) > capacity:
                 raise QueueFull()
             self.connection.executemany(
-                "INSERT INTO jobs(request_key,url,cache_key,chat_id,message_id,requester_id,thread_id,business_id,mode,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO jobs(request_key,url,cache_key,chat_id,message_id,requester_id,thread_id,business_id,mode,created_at,updated_at,requested_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 [
                     (
                         key,
@@ -156,6 +160,7 @@ class Database:
                         destination.thread_id,
                         destination.business_id,
                         mode,
+                        now,
                         now,
                         now,
                     )
@@ -189,14 +194,14 @@ class Database:
                 # Keep accepted album checkpoints: retry only the remaining pieces.
                 self.connection.execute(
                     """UPDATE jobs SET status='queued',attempts=0,error_code=NULL,
-                    available_at=0,updated_at=? WHERE id=?""",
-                    (now, row["id"]),
+                    available_at=0,updated_at=?,requested_at=? WHERE id=?""",
+                    (now, now, row["id"]),
                 )
             else:
                 key = f"media:{source['business_id']}:{source['chat_id']}:{source['message_id']}:{source['cache_key']}:{mode}"
                 self.connection.execute(
                     """INSERT INTO jobs(request_key,url,cache_key,chat_id,message_id,requester_id,
-                    thread_id,business_id,mode,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    thread_id,business_id,mode,created_at,updated_at,requested_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         key,
                         source["url"],
@@ -207,6 +212,7 @@ class Database:
                         source["thread_id"],
                         source["business_id"],
                         mode,
+                        now,
                         now,
                         now,
                     ),
@@ -249,11 +255,18 @@ class Database:
                 (job_id, piece, json.dumps(message_ids), time.time()),
             )
             self.connection.execute(
-                "UPDATE jobs SET progress=?,updated_at=? WHERE id=?", (piece + 1, time.time(), job_id)
+                "UPDATE jobs SET progress=?,status='running',updated_at=? WHERE id=?", (piece + 1, time.time(), job_id)
             )
 
     def get_job(self, job_id: int):
         return self.connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+
+    def request_remaining(self, job_id: int, timeout: float) -> float:
+        row = self.get_job(job_id)
+        if row is None:
+            return 0
+        requested = row["requested_at"] or row["created_at"]
+        return max(0, min(timeout, timeout - (time.time() - requested)))
 
     def offer_retry(self, job_id: int) -> None:
         with self.connection:
@@ -289,8 +302,8 @@ class Database:
             if count >= capacity:
                 raise QueueFull()
             self.connection.execute(
-                "UPDATE jobs SET status='queued',retryable=0,error_code=NULL,available_at=0,updated_at=? WHERE id=?",
-                (time.time(), job_id),
+                "UPDATE jobs SET status='queued',retryable=0,error_code=NULL,available_at=0,updated_at=?,requested_at=? WHERE id=?",
+                (time.time(), time.time(), job_id),
             )
         return True
 
