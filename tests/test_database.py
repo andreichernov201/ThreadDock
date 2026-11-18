@@ -9,7 +9,7 @@ from tests.support import DatabaseFixture
 class DatabaseTests(DatabaseFixture, unittest.TestCase):
     def test_explicit_retry_gets_new_budget_but_automatic_retry_does_not(self):
         job = self.job()
-        self.database.connection.execute("UPDATE jobs SET requested_at=? WHERE id=?", (time.time() - 120, job.id))
+        self.database.connection.execute("UPDATE jobs SET active_elapsed=61 WHERE id=?", (job.id,))
         self.database.connection.commit()
         self.database.status(job.id, "queued", "network", delay=2)
         self.assertEqual(self.database.request_remaining(job.id, 60), 0)
@@ -40,7 +40,7 @@ class DatabaseTests(DatabaseFixture, unittest.TestCase):
     def test_explicit_media_action_refreshes_only_its_own_budget(self):
         source = self.job()
         self.database.complete_job(source.id)
-        self.database.connection.execute("UPDATE jobs SET requested_at=? WHERE id=?", (time.time() - 120, source.id))
+        self.database.connection.execute("UPDATE jobs SET active_elapsed=61 WHERE id=?", (source.id,))
         self.database.connection.commit()
         self.assertEqual(self.database.request_media(source.id, "photos", 100), "accepted")
         photos = self.database.claim()

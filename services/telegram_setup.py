@@ -17,6 +17,7 @@ async def configure_telegram(bot, archive_config):
         ("archive", T.SERVICES_TELEGRAM_SETUP_COMMAND_ARCHIVE),
         ("archive_on", T.SERVICES_TELEGRAM_SETUP_COMMAND_ARCHIVE_ON),
         ("status", T.SERVICES_TELEGRAM_SETUP_COMMAND_STATUS),
+        ("settings", T.PREF_COMMAND),
         ("stats", T.SERVICES_TELEGRAM_SETUP_COMMAND_STATS),
         ("export", T.SERVICES_TELEGRAM_SETUP_COMMAND_EXPORT),
         ("pause", T.SERVICES_TELEGRAM_SETUP_COMMAND_PAUSE),
@@ -29,6 +30,9 @@ async def configure_telegram(bot, archive_config):
     groups = [
         ("enable", T.SERVICES_TELEGRAM_SETUP_COMMAND_ENABLE),
         ("disable", T.SERVICES_TELEGRAM_SETUP_COMMAND_DISABLE),
+        ("settings", T.PREF_COMMAND),
+        ("allow", T.PREF_ALLOW_COMMAND),
+        ("deny", T.PREF_DENY_COMMAND),
         ("photos", T.GROUP_MODE_COMMAND_PHOTOS),
         ("slideshow", T.GROUP_MODE_COMMAND_SLIDESHOW),
         ("status", T.SERVICES_TELEGRAM_SETUP_COMMAND_MY_TASKS),

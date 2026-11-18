@@ -295,7 +295,7 @@ class FFmpegIntegrationTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
                 "-f",
                 "lavfi",
                 "-i",
-                "testsrc2=size=160x120:rate=15:duration=2.4",
+                "testsrc2=size=160x120:rate=15:duration=6.4",
                 "-c:v",
                 "libx264",
                 str(clip),
@@ -324,8 +324,11 @@ class FFmpegIntegrationTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
             timeout=20,
         )
         asset, has_audio = await self.tools.slideshow([photo], music, self.root, motion={0: clip})
-        self.assertAlmostEqual(asset.duration, 2.4, delta=0.1)
+        self.assertAlmostEqual(asset.duration, 6.4, delta=0.1)
         self.assertTrue(has_audio)
+        limited = MediaTools(replace(self.settings, live_photo_limit=5))
+        asset, _ = await limited.slideshow([photo], music, self.root, motion={0: clip})
+        self.assertAlmostEqual(asset.duration, 5, delta=0.1)
 
 
 @unittest.skipUnless(shutil.which("yt-dlp"), "yt-dlp is not installed")

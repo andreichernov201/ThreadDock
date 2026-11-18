@@ -13,7 +13,7 @@ from pathlib import Path
 from config import Settings
 from core import texts as T
 from core.errors import MediaError
-from core.models import MediaBundle
+from core.models import MediaBundle, RenderOptions
 from services.gallery import GalleryAdapter
 from services.http import PublicHttp
 from services.links import normalize_url
@@ -90,10 +90,19 @@ class MediaPipeline:
             if not self.leases[path]:
                 del self.leases[path]
 
-    async def fetch(self, url: str, *, force: bool = False) -> MediaBundle:
+    async def fetch(self, url: str, *, force: bool = False, render: RenderOptions = RenderOptions()) -> MediaBundle:
         link = normalize_url(url)
-        async with self.locks.hold(link.cache_key):
-            cached = self.database.get_cache(link.cache_key)
+        cache_key = render.cache_key(link.cache_key)
+        tools, photos, gallery = self.tools, self.photos, self.gallery
+        if render != RenderOptions():
+            settings = replace(
+                self.settings, slideshow_seconds=render.photo_seconds, live_photo_limit=render.live_limit
+            )
+            tools = MediaTools(settings)
+            photos = TikTokPhotos(settings, self.photos.http, tools)
+            gallery = GalleryAdapter(settings, self.gallery.http, tools)
+        async with self.locks.hold(cache_key):
+            cached = self.database.get_cache(cache_key)
             if cached and not cached.motion_pending and not force:
                 logger.info("media_cache hit=disk platform=%s", link.platform)
                 return cached
@@ -115,7 +124,7 @@ class MediaPipeline:
                     photo_error = None
                     if link.platform == "TikTok" and "/video/" not in link.url:
                         try:
-                            bundle = await self.photos.download(link, directory)
+                            bundle = await photos.download(link, directory)
                         except MediaError as error:
                             preserve_limits(error)
                             photo_error = error
@@ -128,7 +137,7 @@ class MediaPipeline:
                         )
                         if prefer_gallery:
                             try:
-                                bundle = await self.gallery.download(link, directory)
+                                bundle = await gallery.download(link, directory)
                             except MediaError as error:
                                 preserve_limits(error)
                                 logger.info("gallery_probe_failed platform=%s code=%s", link.platform, error.code)
@@ -144,7 +153,7 @@ class MediaPipeline:
                                 # TikTok sometimes serves photo posts at a /video/ route.
                                 # Only check after video extraction failed.
                                 try:
-                                    bundle = await self.photos.download(link, directory)
+                                    bundle = await photos.download(link, directory)
                                 except MediaError as error:
                                     preserve_limits(error)
                                     photo_error = error
@@ -152,7 +161,7 @@ class MediaPipeline:
                             if bundle is None:
                                 if link.platform in {"TikTok", "X"}:
                                     try:
-                                        bundle = await self.gallery.download(link, directory)
+                                        bundle = await gallery.download(link, directory)
                                     except MediaError as error:
                                         preserve_limits(error)
                                         logger.info("gallery_fallback_failed code=%s", error.code)
@@ -166,7 +175,7 @@ class MediaPipeline:
 
                                 media = []
                                 for index, item in enumerate(source):
-                                    asset, _ = await self.tools.compatible_video(item, directory)
+                                    asset, _ = await tools.compatible_video(item, directory)
                                     target = directory / f"media-{index:03}.mp4"
                                     asset.path(directory).replace(target)
                                     media.append(Asset(target.name, "video", asset.duration, asset.width, asset.height))
@@ -174,10 +183,10 @@ class MediaPipeline:
                                     directory, link.url, link.platform, title, None, media=tuple(media)
                                 )
                         if bundle is None:
-                            video, has_audio = await self.tools.compatible_video(source, directory)
+                            video, has_audio = await tools.compatible_video(source, directory)
                             try:
                                 async with asyncio.timeout(min(30, self.settings.process_timeout)):
-                                    audio = await self.tools.extract_audio(source, directory)
+                                    audio = await tools.extract_audio(source, directory)
                             except (MediaError, TimeoutError) as error:
                                 logger.warning("optional_audio code=%s", getattr(error, "code", "timeout"))
                                 audio = None
@@ -189,11 +198,11 @@ class MediaPipeline:
                         if path.is_file() and path.name not in keep:
                             path.unlink()
                     # Never replace files another chat may currently be sending.
-                    target = self.cache / (link.cache_key + "-" + uuid.uuid4().hex[:16])
+                    target = self.cache / (cache_key + "-" + uuid.uuid4().hex[:16])
                     directory.replace(target)
                     bundle = replace(bundle, directory=target)
                     self.database.put_cache(
-                        link.cache_key,
+                        cache_key,
                         bundle,
                         min(60, self.settings.cache_ttl) if bundle.motion_pending else self.settings.cache_ttl,
                     )

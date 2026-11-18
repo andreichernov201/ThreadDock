@@ -1,5 +1,4 @@
 import asyncio
-import time
 import unittest
 from contextlib import nullcontext
 from dataclasses import replace
@@ -22,9 +21,9 @@ class RequestDeadlineTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         )
         self.queue = JobQueue(self.settings, self.database, self.pipeline, self.delivery)
 
-    async def test_queue_wait_expires_even_when_telegram_cache_is_available(self):
+    async def test_exhausted_active_budget_never_sends_even_with_telegram_cache(self):
         job = self.job()
-        self.database.connection.execute("UPDATE jobs SET requested_at=? WHERE id=?", (time.time() - 61, job.id))
+        self.database.connection.execute("UPDATE jobs SET active_elapsed=61 WHERE id=?", (job.id,))
         self.database.connection.commit()
         self.delivery.cached = lambda j: self.bundle()
         await self.queue._process(job)
@@ -79,7 +78,7 @@ class RequestDeadlineTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
 
     async def test_successful_processing_does_not_extend_an_expired_delivery_window(self):
         async def fetch(*args):
-            self.database.connection.execute("UPDATE jobs SET requested_at=? WHERE id=?", (time.time() - 61, job.id))
+            self.database.connection.execute("UPDATE jobs SET active_elapsed=61 WHERE id=?", (job.id,))
             self.database.connection.commit()
             # This models a source client that returns after consuming its budget.
             return self.bundle()

@@ -77,7 +77,7 @@ class DeliveryTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         job, bundle = self.job(mode="photos"), self.bundle(photos=11)
 
         async def accepted(**kwargs):
-            self.database.connection.execute("UPDATE jobs SET requested_at=? WHERE id=?", (time.time() - 61, job.id))
+            self.database.connection.execute("UPDATE jobs SET active_elapsed=61 WHERE id=?", (job.id,))
             self.database.connection.commit()
             return [sent(index + 1, "document") for index in range(10)]
 
@@ -90,7 +90,6 @@ class DeliveryTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
 
     async def test_business_route_carries_connection_and_reply(self):
         self.database.save_connection("conn", 99, True, True)
-        import time
 
         self.database.touch_business_chat("conn", 10, time.time())
         job = self.job(business_id="conn")

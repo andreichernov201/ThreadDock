@@ -1,11 +1,27 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Literal
 
 DeliveryMode = Literal["video", "album", "photos", "audio"]
+
+
+@dataclass(frozen=True)
+class RenderOptions:
+    photo_seconds: int = 3
+    live_limit: int = 0
+
+    def __post_init__(self):
+        if self.photo_seconds not in {2, 3, 5, 10} or self.live_limit not in {0, 5, 10}:
+            raise ValueError("Invalid slideshow options")
+
+    def cache_key(self, base: str) -> str:
+        if self == RenderOptions():
+            return base
+        return hashlib.sha256(f"{base}:slides:{self.photo_seconds}:live:{self.live_limit}".encode()).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -26,6 +42,7 @@ class Job:
     mode: DeliveryMode
     attempts: int
     progress: int = 0
+    render: RenderOptions = RenderOptions()
 
 
 @dataclass(frozen=True)

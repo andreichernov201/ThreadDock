@@ -18,6 +18,7 @@ from config import Settings
 from core import texts as T
 from core.errors import MediaError, MissingAsset
 from core.models import Asset, Destination, Job, MediaBundle
+from services.access import sender_permitted
 from storage.database import Database
 
 logger = logging.getLogger(__name__)
@@ -133,7 +134,7 @@ class TelegramDelivery:
         return [result]
 
     async def deliver(self, job: Job, bundle: MediaBundle) -> None:
-        if not self.permitted(job.destination):
+        if not self.permitted(job.destination) or not await sender_permitted(self.bot, self.database, job.destination):
             raise MediaError(T.SERVICES_DELIVERY_PERMISSION_REVOKED, code="permission_revoked")
         items = bundle.items(job.mode)
         if not items:
@@ -147,7 +148,9 @@ class TelegramDelivery:
         for index, piece in enumerate(pieces):
             if index < job.progress:
                 continue
-            if not self.permitted(job.destination):
+            if not self.permitted(job.destination) or not await sender_permitted(
+                self.bot, self.database, job.destination
+            ):
                 raise MediaError(T.SERVICES_DELIVERY_SEND_PERMISSION_REVOKED, code="permission_revoked")
             self._check_deadline(job)
             self.database.status(job.id, "sending")

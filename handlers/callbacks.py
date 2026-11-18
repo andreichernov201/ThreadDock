@@ -4,6 +4,7 @@ from aiogram.types import CallbackQuery, Message
 from core import texts as T
 from core.errors import MediaError
 from core.models import Destination
+from services.access import sender_permitted
 from services.application import Application
 
 router = Router()
@@ -41,7 +42,11 @@ async def media_action(query: CallbackQuery, app: Application) -> None:
     destination = Destination(
         row["chat_id"], row["message_id"], query.from_user.id, row["thread_id"], row["business_id"]
     )
-    if not app.accepting or not app.delivery.permitted(destination):
+    if (
+        not app.accepting
+        or not app.delivery.permitted(destination)
+        or not await sender_permitted(app.bot, app.database, destination)
+    ):
         await query.answer(T.HANDLERS_CALLBACKS_DELIVERY_UNAVAILABLE, show_alert=True)
         return
     try:
@@ -59,6 +64,7 @@ async def media_action(query: CallbackQuery, app: Application) -> None:
         "accepted": T.HANDLERS_CALLBACKS_QUEUED,
         "queued": T.HANDLERS_CALLBACKS_ALREADY_QUEUED,
         "running": T.HANDLERS_CALLBACKS_ALREADY_RUNNING,
+        "ready": T.HANDLERS_CALLBACKS_ALREADY_RUNNING,
         "sending": T.HANDLERS_CALLBACKS_ALREADY_RUNNING,
         "done": T.HANDLERS_CALLBACKS_ALREADY_DONE,
         "expired": T.HANDLERS_CALLBACKS_JOB_EXPIRED,

@@ -63,6 +63,21 @@ class JobTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.database.claim())
         self.assertIsNone(self.delivery.text.call_args.args[2])
 
+    async def test_failed_connection_before_request_is_safe_to_retry(self):
+        from aiohttp import ClientConnectorError
+
+        job = self.job()
+        error = TelegramNetworkError(method=SendVideo(chat_id=10, video="file"), message="connect failed")
+        error.__cause__ = ClientConnectorError(
+            SimpleNamespace(ssl=True, host="example.org", port=443), OSError("unreachable")
+        )
+        self.delivery.deliver.side_effect = error
+        await self.queue._process(job)
+        row = self.database.get_job(job.id)
+        self.assertEqual(row["status"], "queued")
+        self.assertEqual(row["error_code"], "telegram_connect")
+        self.delivery.text.assert_not_awaited()
+
     async def test_telegram_rate_limit_schedules_instead_of_failing(self):
         job = self.job()
         self.delivery.deliver.side_effect = TelegramRetryAfter(

@@ -8,7 +8,8 @@ from aiogram.types import BusinessConnection, Message
 from archive.service import ArchiveService
 from config import Settings
 from core import texts as T
-from core.models import Destination
+from core.models import Destination, RenderOptions
+from services.access import sender_permitted
 from services.delivery import TelegramDelivery
 from services.http import PublicHttp
 from services.jobs import JobQueue
@@ -66,14 +67,23 @@ class Application:
                 return None
         elif message.chat.type != "private":
             return None
-        return Destination(
+        destination = Destination(
             message.chat.id, message.message_id, message.from_user.id, message.message_thread_id, identifier
         )
+        return destination if await sender_permitted(self.bot, self.database, destination) else None
 
     def submit(self, destination: Destination, text: str, entities=()) -> tuple[int, list[str]]:
         errors: list[str] = []
         requests = []
         seen: set[str] = set()
+        connection = self.database.connection_info(destination.business_id) if destination.business_id else None
+        scope, subject = (
+            ("group", destination.chat_id)
+            if destination.chat_id < 0
+            else ("user", connection["owner_id"] if connection else destination.requester_id)
+        )
+        prefs = self.database.preferences(scope, subject)
+        render = RenderOptions(prefs["photo_seconds"], prefs["live_limit"])
         for url in extract_urls(text, entities):
             try:
                 link = normalize_url(url)
@@ -87,15 +97,13 @@ class Application:
                 request_key = (
                     f"message:{destination.business_id}:{destination.chat_id}:{destination.message_id}:{link.cache_key}"
                 )
-                requests.append((request_key, link.url, link.cache_key))
+                requests.append((request_key, link.url, render.cache_key(link.cache_key)))
         if not self.accepting:
             return 0, [T.SERVICES_APPLICATION_RESTARTING]
-        mode = (
-            "album"
-            if destination.chat_id < 0 and self.database.group_photo_mode(destination.chat_id) == "photos"
-            else "video"
+        mode = "album" if prefs["mode"] == "photos" else "video"
+        count = (
+            self.database.enqueue(requests, destination, mode, self.settings.queue_capacity, render) if requests else 0
         )
-        count = self.database.enqueue(requests, destination, mode, self.settings.queue_capacity) if requests else 0
         if requests:
             logger.info(
                 "download_submit chat=%s message=%s business=%s links=%s queued=%s suppressed=%s",
