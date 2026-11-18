@@ -156,6 +156,7 @@ SERVICES_JOBS_SEND_UNCERTAIN = "Возможно, видео уже пришло
 SERVICES_JOBS_FILE_REJECTED = "Не получилось скачать видео."
 SERVICES_JOBS_INTERNAL_ERROR = "Попробуйте позже."
 SERVICES_JOBS_RETRY = "Повторить"
+SERVICES_DELIVERY_ALBUM_ACTIONS = "Скачать отдельно:"
 SERVICES_LINKS_INVALID_CHARACTERS = "В ссылке есть недопустимые символы."
 SERVICES_LINKS_INVALID_URL = "Некорректная ссылка."
 SERVICES_LINKS_INVALID_HOST = "Некорректный адрес сайта."

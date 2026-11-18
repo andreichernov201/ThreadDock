@@ -125,12 +125,16 @@ class TelegramDelivery:
             )
         elif asset.kind == "audio":
             result = await self.bot.send_audio(
-                **options, audio=value, title=bundle.title[:64], duration=int(asset.duration)
+                **options,
+                audio=value,
+                title=bundle.title[:64],
+                duration=int(asset.duration),
+                reply_markup=self.keyboard(job, bundle),
             )
         elif asset.kind == "photo":
             result = await self.bot.send_photo(**options, photo=value, reply_markup=self.keyboard(job, bundle))
         else:
-            result = await self.bot.send_document(**options, document=value)
+            result = await self.bot.send_document(**options, document=value, reply_markup=self.keyboard(job, bundle))
         return [result]
 
     async def deliver(self, job: Job, bundle: MediaBundle) -> None:
@@ -181,16 +185,20 @@ class TelegramDelivery:
                 and self.keyboard(job, bundle)
                 and self.database.request_remaining(job.id, self.settings.request_timeout) > 0
             ):
-                # Albums cannot include reply_markup. Edit the last accepted member;
-                # failure of this optional UI step must never replay accepted media.
+                # Clients do not display keyboards on media-group members. Keep
+                # controls in a separate reply after the confirmed final album.
+                # This runs only for a newly accepted piece, never on recovery.
                 from aiogram.exceptions import TelegramAPIError
 
                 try:
-                    await self.bot.edit_message_reply_markup(
-                        chat_id=job.destination.chat_id,
-                        message_id=messages[-1].message_id,
-                        business_connection_id=job.destination.business_id or None,
+                    options = target_options(job.destination)
+                    options["reply_parameters"] = ReplyParameters(
+                        message_id=messages[-1].message_id, allow_sending_without_reply=True
+                    )
+                    await self.bot.send_message(
+                        **options,
+                        text=T.SERVICES_DELIVERY_ALBUM_ACTIONS,
                         reply_markup=self.keyboard(job, bundle),
                     )
                 except TelegramAPIError as error:
-                    logger.info("album_keyboard_unavailable type=%s", type(error).__name__)
+                    logger.info("album_controls_unavailable type=%s", type(error).__name__)
