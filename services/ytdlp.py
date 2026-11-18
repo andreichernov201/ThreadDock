@@ -37,11 +37,11 @@ def build_command(settings: Settings, link: VideoLink, directory: Path, proxy: s
         "--socket-timeout",
         "15",
         "--retries",
-        "3",
+        "0",
         "--fragment-retries",
-        "3",
+        "0",
         "--extractor-retries",
-        "2",
+        "0",
         "--retry-sleep",
         "http:exp=1:5",
         "--abort-on-unavailable-fragments",
@@ -90,7 +90,19 @@ def source_error(stderr: bytes) -> MediaError:
         return MediaError(T.SERVICES_YTDLP_SOURCE_UNAVAILABLE, code="source_temporary", retryable=True)
     if any(word in text for word in ("403", "captcha", "challenge", "status code 0", "impersonat", "cloudflare")):
         return MediaError(T.SERVICES_YTDLP_BLOCKED, code="source_blocked", retryable=True)
-    if any(word in text for word in ("private", "login required", "log in", "sign in", "cookies", "age-restricted")):
+    if any(
+        word in text
+        for word in (
+            "401",
+            "unauthorized",
+            "private",
+            "login required",
+            "log in",
+            "sign in",
+            "cookies",
+            "age-restricted",
+        )
+    ):
         return MediaError(T.SERVICES_YTDLP_RESTRICTED, code="authentication")
     if any(word in text for word in ("max-filesize", "larger than max", "file is larger")):
         return MediaError(T.SERVICES_YTDLP_DOWNLOAD_TOO_LARGE, code="file_too_large")
@@ -109,7 +121,7 @@ class YtDlpAdapter:
         async with SafeProxy() as proxy:
             result = await run_process(
                 build_command(self.settings, link, directory, proxy.url),
-                timeout=self.settings.download_timeout,
+                timeout=min(self.settings.download_timeout, self.settings.extractor_timeout),
                 watch_directory=directory,
                 max_disk_bytes=self.settings.max_download_bytes * 3,
             )

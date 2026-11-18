@@ -17,7 +17,7 @@ from services.http import PublicHttp
 from services.links import VideoLink
 from services.media import MediaTools
 from services.processes import directory_size
-from services.tiktok_live import public_live_photos, public_video_urls
+from services.tiktok_live import public_live_photos, public_video_urls, video_candidates
 
 logger = logging.getLogger(__name__)
 
@@ -182,8 +182,11 @@ class TikTokPhotos:
                 # CDN addresses sometimes use an HTTP spelling but also support HTTPS.
                 if url.startswith("http://"):
                     url = "https://" + url[7:]
-                return (await self.http.get(url, limit, destination=target)).content_type
+                async with asyncio.timeout(min(60, self.settings.download_timeout)):
+                    return (await self.http.get(url, limit, destination=target)).content_type
             except MediaError as error:
+                if error.code == "file_too_large":
+                    raise
                 last_error = error
         raise last_error or MediaError(T.SERVICES_TIKTOK_MEDIA_URL_MISSING, code="photo_metadata")
 
@@ -214,27 +217,31 @@ class TikTokPhotos:
             if video is None:
                 return None
             title, urls = video
+            first_party = await public_video_urls(self.http, match[1]) if match else ()
+            urls = tuple(dict.fromkeys(first_party + video_candidates(urls)))
             source = directory / "tiktok-source.mp4"
             last_error = None
-            for url in urls[:5]:
-                try:
-                    await self._download_candidates((url,), source, self.settings.max_download_bytes)
-                    asset, has_audio = await self.media.compatible_video(source, directory)
-                    break
-                except MediaError as error:
-                    last_error = error
-                    logger.info("tiktok_video_candidate_failed code=%s", error.code)
-            else:
-                fallback = await public_video_urls(self.http, match[1]) if match else ()
-                for url in fallback:
-                    try:
-                        await self._download_candidates((url,), source, self.settings.max_download_bytes)
-                        asset, has_audio = await self.media.compatible_video(source, directory)
-                        break
-                    except MediaError as error:
-                        last_error = error
-                else:
-                    raise last_error or MediaError(T.SERVICES_YTDLP_DOWNLOAD_FAILED, code="no_video")
+            try:
+                async with asyncio.timeout(self.settings.extractor_timeout):
+                    for url in urls[:5]:
+                        try:
+                            await self._download_candidates((url,), source, self.settings.max_download_bytes)
+                            info = await self.media.probe(source)
+                            if not info.video_codec:
+                                raise MediaError(T.SERVICES_MEDIA_INVALID_FILE, code="invalid_media")
+                            break
+                        except MediaError as error:
+                            if error.code in {"file_too_large", "duration_limit"}:
+                                raise
+                            last_error = error
+                            logger.info("tiktok_video_candidate_failed code=%s", error.code)
+                    else:
+                        raise last_error or MediaError(T.SERVICES_YTDLP_DOWNLOAD_FAILED, code="no_video")
+            except TimeoutError as error:
+                raise MediaError(T.SERVICES_HTTP_SOURCE_UNAVAILABLE, code="source_temporary", retryable=True) from error
+            # Once a valid video is downloaded, conversion failures must not
+            # restart downloads/transcodes of every alternate URL of that file.
+            asset, has_audio = await self.media.compatible_video(source, directory)
             try:
                 async with asyncio.timeout(min(30, self.settings.process_timeout)):
                     audio = await self.media.extract_audio(source, directory)

@@ -4,7 +4,8 @@ import json
 import shutil
 import subprocess
 import unittest
-from unittest.mock import patch
+from dataclasses import replace
+from unittest.mock import AsyncMock, patch
 
 from services.links import normalize_url
 from services.media import MediaTools
@@ -61,6 +62,45 @@ class FFmpegIntegrationTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         self.assertFalse(has_audio)
         self.assertAlmostEqual(info.duration, 3, delta=0.15)
         self.assertEqual(info.video_codec, "h264")
+
+    async def test_oversized_video_fits_in_one_encode_with_audio_and_full_duration(self):
+        source = self.root / "large.mp4"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=640x360:rate=24:duration=10",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=10",
+                "-c:v",
+                "libx264",
+                "-crf",
+                "0",
+                "-c:a",
+                "aac",
+                str(source),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        tools = MediaTools(replace(self.settings, max_upload_bytes=300000))
+        tools.ffmpeg = AsyncMock(wraps=tools.ffmpeg)
+        self.assertGreater(source.stat().st_size, 300000)
+        asset, audio = await tools.compatible_video(source, self.root)
+        self.assertTrue(audio)
+        self.assertAlmostEqual(asset.duration, 10, delta=0.15)
+        self.assertLessEqual(asset.path(self.root).stat().st_size, 300000)
+        encodes = [call for call in tools.ffmpeg.call_args_list if "libx264" in call.args[0]]
+        self.assertEqual(len(encodes), 1)
 
     async def test_multiple_photos_have_three_seconds_each_with_continuous_audio(self):
         photos = [self.fixture("one.jpg", "red"), self.fixture("two.jpg", "blue")]

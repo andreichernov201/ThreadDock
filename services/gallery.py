@@ -89,7 +89,7 @@ class GalleryAdapter:
                 "--proxy",
                 proxy.url,
                 "--retries",
-                "2",
+                "0",
                 "--http-timeout",
                 "15",
                 "--range",
@@ -109,7 +109,7 @@ class GalleryAdapter:
                 command += ["--cookies", str(cookies)]
             result = await run_process(
                 command + ["--", target],
-                timeout=self.settings.download_timeout,
+                timeout=min(self.settings.download_timeout, self.settings.extractor_timeout),
                 cwd=directory,
                 output_limit=16 * 1024**2,
             )

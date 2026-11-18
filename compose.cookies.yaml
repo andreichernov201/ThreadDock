@@ -4,4 +4,4 @@ services:
     environment:
       COOKIES_FILE: /run/secrets/cookies.txt
     volumes:
-      - ./secrets/cookies.txt:/run/secrets/cookies.txt:ro
+      - ${COOKIES_HOST_FILE:-./secrets/cookies.txt}:/run/secrets/cookies.txt:ro

@@ -1,103 +1,131 @@
-"""Optional discovery of public Live Photo clips missing from TikTok's web state.
-
-Only a public post ID is sent to TikWM. Its result must match the post and every
-still image before any motion is accepted. Media bytes come from TikTok's CDN,
-through PublicHttp; resolver/CDN URLs and response bodies are never persisted.
-"""
+"""First-party TikTok player metadata. No hosted downloader or resolver APIs."""
 
 import asyncio
 import json
-import logging
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit, urlunsplit
 
 from core.errors import MediaError
 from services.http import PublicHttp, check_https_url
 
-logger = logging.getLogger(__name__)
-CDN_SUFFIXES = ("tiktokcdn.com", "tiktokcdn-us.com", "tiktokcdn-eu.com", "tiktokv.com")
+CDN_SUFFIXES = ("tiktokcdn.com", "tiktokcdn-us.com", "tiktokcdn-eu.com", "tiktokv.com", "tiktokv.us", "tiktok.com")
 
 
 def image_identity(url: str) -> str:
     return unquote(urlsplit(url).path).rsplit("/", 1)[-1].split("~", 1)[0]
 
 
-def parse_live_photos(
-    payload: bytes, identifier: str, images: tuple[tuple[str, ...], ...]
-) -> tuple[tuple[str, ...], ...] | None:
-    """Fail closed on wrong posts, ambiguous slide positions or non-TikTok media."""
-    empty = tuple(() for _ in images)
-    try:
-        response = json.loads(payload)
-        data = response.get("data")
-        if response.get("code") != 0 or not isinstance(data, dict) or str(data.get("id")) != identifier:
-            return None
-        stills, clips = data.get("images"), data.get("live_images")
-        if not isinstance(stills, list) or len(stills) != len(images):
-            return None
-        for expected, actual in zip(images, stills, strict=True):
-            if not isinstance(actual, str) or not any(
-                image_identity(url) == image_identity(actual) for url in expected
+def checked_url(url: str) -> str:
+    if not isinstance(url, str):
+        raise ValueError("Invalid media URL")
+    check_https_url(url)
+    host = urlsplit(url).hostname or ""
+    if not any(host == suffix or host.endswith("." + suffix) for suffix in CDN_SUFFIXES):
+        raise ValueError("Not a TikTok media origin")
+    return url
+
+
+def video_candidates(urls) -> tuple[str, ...]:
+    result = []
+    for url in urls:
+        try:
+            checked_url(url)
+            parts = urlsplit(url)
+            query = parse_qs(parts.query)
+            if (
+                parts.hostname == "www.tiktok.com"
+                and parts.path == "/aweme/v1/play/"
+                and all(query.get(key) for key in ("video_id", "file_id"))
+                and any(query.get(key) for key in ("sign", "signaturev3", "signv3"))
             ):
-                return None
-        if clips is None or clips == []:
-            return empty
-        if not isinstance(clips, list) or len(clips) != len(images):
+                # Same signed resource, served by TikTok's mobile playback host.
+                result.append(urlunsplit(("https", "api16-normal-useast8.tiktokv.us", parts.path, parts.query, "")))
+            result.append(url)
+        except (ValueError, TypeError, MediaError):
+            continue
+    return tuple(
+        sorted(
+            dict.fromkeys(result),
+            key=lambda url: (
+                "webapp-prime" in urlsplit(url).hostname,
+                urlsplit(url).hostname == "www.tiktok.com",
+            ),
+        )
+    )
+
+
+def parse_player_item(payload: bytes, identifier: str) -> dict | None:
+    try:
+        data = json.loads(payload)
+        if data.get("status_code") != 0:
             return None
-        result = []
-        for clip in clips:
-            if not clip:
-                result.append(())
-                continue
-            if not isinstance(clip, str):
-                return None
-            check_https_url(clip)
-            host = urlsplit(clip).hostname or ""
-            if not any(host == suffix or host.endswith("." + suffix) for suffix in CDN_SUFFIXES):
-                return None
-            result.append((clip,))
-        return tuple(result)
-    except (ValueError, TypeError, AttributeError, MediaError):
+        return next(
+            (
+                item
+                for item in data.get("items", [])
+                if isinstance(item, dict) and str(item.get("id_str") or item.get("id")) == identifier
+            ),
+            None,
+        )
+    except (ValueError, TypeError, AttributeError):
         return None
 
 
-async def public_live_photos(
-    http: PublicHttp, identifier: str, images: tuple[tuple[str, ...], ...]
-) -> tuple[tuple[str, ...], ...] | None:
+async def player_item(http: PublicHttp, identifier: str) -> dict | None:
     if not identifier.isascii() or not identifier.isdigit() or not 10 <= len(identifier) <= 25:
         return None
     try:
         async with asyncio.timeout(8):
-            response = await http.get_browser(f"https://www.tikwm.com/api/?url={identifier}&hd=1", 2 * 1024**2)
-        motion = parse_live_photos(response.body, identifier, images)
-        logger.info(
-            "tiktok_live_lookup clips=%s", sum(bool(item) for item in motion) if motion is not None else "unknown"
-        )
-        return motion
-    except (MediaError, TimeoutError) as error:
-        logger.info("optional_tiktok_live_lookup code=%s", getattr(error, "code", "timeout"))
+            response = await http.get_browser(
+                f"https://www.tiktok.com/player/api/v1/items?item_ids={identifier}&aid=1988", 8 * 1024**2
+            )
+        return parse_player_item(response.body, identifier)
+    except (MediaError, TimeoutError):
         return None
+
+
+def parse_live_photos(payload: bytes, identifier: str, images: tuple[tuple[str, ...], ...]):
+    item = parse_player_item(payload, identifier)
+    if item is None:
+        return None
+    try:
+        stills = item["image_post_info"]["images"]
+        if len(stills) != len(images):
+            return None
+        result = []
+        for expected, actual in zip(images, stills, strict=True):
+            urls = actual["display_image"]["url_list"]
+            if not any(image_identity(a) == image_identity(b) for a in expected for b in urls):
+                return None
+            video = actual.get("video") or actual.get("live_photo_video") or {}
+            clips = video.get("url_list") or video.get("play_addr", {}).get("url_list") or []
+            result.append(tuple(checked_url(url) for url in clips))
+        # Absence of motion in this endpoint does not prove the source is static.
+        return tuple(result) if any(result) else None
+    except (KeyError, TypeError, ValueError, AttributeError, MediaError):
+        return None
+
+
+async def public_live_photos(http: PublicHttp, identifier: str, images: tuple[tuple[str, ...], ...]):
+    item = await player_item(http, identifier)
+    if item is None:
+        return None
+    return parse_live_photos(json.dumps({"status_code": 0, "items": [item]}).encode(), identifier, images)
 
 
 async def public_video_urls(http: PublicHttp, identifier: str) -> tuple[str, ...]:
-    """Resolve only an ID already matched to a public TikTok video page."""
-    if not identifier.isascii() or not identifier.isdigit() or not 10 <= len(identifier) <= 25:
+    item = await player_item(http, identifier)
+    if item is None or item.get("image_post_info"):
         return ()
     try:
-        async with asyncio.timeout(8):
-            response = await http.get_browser(f"https://www.tikwm.com/api/?url={identifier}&hd=1", 2 * 1024**2)
-        payload = json.loads(response.body)
-        data = payload.get("data")
-        if payload.get("code") != 0 or not isinstance(data, dict) or str(data.get("id")) != identifier:
-            return ()
-        urls = []
-        for key in ("hdplay", "play"):
-            url = data.get(key)
-            if not isinstance(url, str):
-                continue
-            check_https_url(url)
-            host = urlsplit(url).hostname or ""
-            if host == "www.tikwm.com" or any(host == s or host.endswith("." + s) for s in CDN_SUFFIXES):
-                urls.append(url)
-        return tuple(dict.fromkeys(urls))
-    except (MediaError, TimeoutError, ValueError, AttributeError, TypeError):
+        profiles = item.get("video_info", {}).get("profiles", [])
+        profiles = [p for p in profiles if p.get("codec_type") in {"h264", "h265"}]
+        profiles.sort(key=lambda p: (p.get("codec_type") == "h264", int(p.get("bitrate") or 0)), reverse=True)
+        return tuple(
+            dict.fromkeys(
+                url
+                for profile in profiles
+                for url in video_candidates(profile.get("play_addr", {}).get("url_list", []))
+            )
+        )
+    except (ValueError, TypeError, AttributeError):
         return ()
