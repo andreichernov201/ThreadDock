@@ -44,6 +44,7 @@ class Settings:
     queue_capacity: int = 200
     download_timeout: int = 300
     extractor_timeout: int = 45
+    request_timeout: int = 60
     process_timeout: int = 300
     max_download_bytes: int = 500 * 1024 * 1024
     max_upload_bytes: int = 49_000_000
@@ -73,6 +74,7 @@ class Settings:
             self.queue_capacity,
             self.download_timeout,
             self.extractor_timeout,
+            self.request_timeout,
             self.process_timeout,
             self.max_download_bytes,
             self.max_upload_bytes,
@@ -84,6 +86,8 @@ class Settings:
         )
         if any(not math.isfinite(value) or value <= 0 for value in positive):
             raise ValueError(T.CONFIG_POSITIVE_SETTINGS_REQUIRED)
+        if self.request_timeout > 60:
+            raise ValueError(T.CONFIG_INTEGER_RANGE.format(name="REQUEST_TIMEOUT_SECONDS", minimum=1, maximum=60))
         if not self.api_base and self.max_upload_bytes > 50_000_000:
             raise ValueError(T.CONFIG_LOCAL_API_REQUIRED)
 
@@ -104,6 +108,7 @@ def load_settings(*, require_token: bool = True) -> Settings:
         queue_capacity=_integer("QUEUE_CAPACITY", 200),
         download_timeout=_integer("DOWNLOAD_TIMEOUT_SECONDS", 300, maximum=7200),
         extractor_timeout=_integer("EXTRACTOR_TIMEOUT_SECONDS", 45, maximum=300),
+        request_timeout=_integer("REQUEST_TIMEOUT_SECONDS", 60, maximum=60),
         process_timeout=_integer("PROCESS_TIMEOUT_SECONDS", 300, maximum=7200),
         max_download_bytes=_integer("MAX_DOWNLOAD_MB", 500) * 1024**2,
         max_upload_bytes=_integer("MAX_UPLOAD_MB", 49, maximum=2000) * 1_000_000,

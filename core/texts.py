@@ -259,6 +259,7 @@ HANDLERS_CALLBACKS_ALREADY_RUNNING = "Уже загружаю или отпра�
 HANDLERS_CALLBACKS_ALREADY_DONE = "Этот файл уже отправлен в переписку."
 
 DOWNLOAD_TRY_LATER = "Попробуйте позже."
+DOWNLOAD_TIME_LIMIT = "Не удалось подготовить медиа за {seconds} с. Загрузка остановлена."
 DOWNLOAD_UNAVAILABLE = "Пост недоступен."
 DOWNLOAD_FAILED = "Не получилось скачать видео."
 DOWNLOAD_TOO_LARGE = "Видео слишком большое."

@@ -59,6 +59,12 @@ class TelegramDelivery:
     def cached(self, job: Job) -> MediaBundle | None:
         return self.database.get_delivery_cache(self.bot.id, job.cache_key, job.mode)
 
+    def _check_deadline(self, job: Job) -> None:
+        if self.database.request_remaining(job.id, self.settings.request_timeout) <= 0:
+            raise MediaError(
+                T.DOWNLOAD_TIME_LIMIT.format(seconds=int(self.settings.request_timeout)), code="request_expired"
+            )
+
     def _input(self, job: Job, bundle: MediaBundle, asset: Asset, *, use_cache: bool = True):
         cached = self.database.file_id(self.bot.id, job.cache_key, asset.filename, asset.kind) if use_cache else None
         if cached:
@@ -143,15 +149,19 @@ class TelegramDelivery:
                 continue
             if not self.permitted(job.destination):
                 raise MediaError(T.SERVICES_DELIVERY_SEND_PERMISSION_REVOKED, code="permission_revoked")
+            self._check_deadline(job)
             self.database.status(job.id, "sending")
             try:
                 messages = await self._send_piece(job, bundle, piece, use_cache=True)
             except TelegramBadRequest as error:
                 if not is_file_id_error(error):
                     raise
+                self.database.status(job.id, "running")
                 for asset in piece:
                     for part in asset.parts:
                         self.database.forget_file_id(self.bot.id, job.cache_key, part.filename, part.kind)
+                self._check_deadline(job)
+                self.database.status(job.id, "sending")
                 messages = await self._send_piece(job, bundle, piece, use_cache=False)
             # Save checkpoint before cache writes: a crash must not replay an accepted album.
             self.database.delivered_piece(job.id, index, [message.message_id for message in messages])
@@ -162,7 +172,12 @@ class TelegramDelivery:
                 if remote:
                     self.database.save_file_id(self.bot.id, job.cache_key, asset.filename, asset.kind, remote.file_id)
             self.database.remember_delivery(job.cache_key, bundle)
-            if len(piece) > 1 and index == len(pieces) - 1 and self.keyboard(job, bundle):
+            if (
+                len(piece) > 1
+                and index == len(pieces) - 1
+                and self.keyboard(job, bundle)
+                and self.database.request_remaining(job.id, self.settings.request_timeout) > 0
+            ):
                 # Albums cannot include reply_markup. Edit the last accepted member;
                 # failure of this optional UI step must never replay accepted media.
                 from aiogram.exceptions import TelegramAPIError

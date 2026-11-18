@@ -79,32 +79,45 @@ class JobQueue:
     async def _run_job(self, job: Job) -> None:
         started = time.monotonic()
         stage = "permission"
+        bundle = None
         try:
-            if not self.delivery.permitted(job.destination):
-                raise MediaError(T.SERVICES_JOBS_CHAT_DISABLED, code="permission_revoked")
-            bundle = self.delivery.cached(job)
-            logger.info("download_start cache=%s progress=%s", "telegram" if bundle else "miss", job.progress)
-            if bundle is None:
-                stage = "download"
-                bundle = await self.pipeline.fetch(job.url)
-            try:
-                stage = "delivery"
-                with self.pipeline.using(bundle):
-                    await self.delivery.deliver(job, bundle)
-            except MissingAsset:
-                bundle = await self.pipeline.fetch(job.url, force=True)
-                row = self.database.get_job(job.id)
-                with self.pipeline.using(bundle):
-                    await self.delivery.deliver(replace(job, progress=row["progress"]), bundle)
-            self.database.complete_job(job.id)
-            logger.info("download_done elapsed_ms=%s", round((time.monotonic() - started) * 1000))
+            remaining = self.database.request_remaining(job.id, self.settings.request_timeout)
+            if remaining <= 0:
+                await self._expire(job)
+                return
+            async with asyncio.timeout(remaining):
+                if not self.delivery.permitted(job.destination):
+                    raise MediaError(T.SERVICES_JOBS_CHAT_DISABLED, code="permission_revoked")
+                bundle = self.delivery.cached(job)
+                logger.info("download_start cache=%s progress=%s", "telegram" if bundle else "miss", job.progress)
+                if bundle is None:
+                    stage = "download"
+                    bundle = await self.pipeline.fetch(job.url)
+                try:
+                    stage = "delivery"
+                    with self.pipeline.using(bundle):
+                        await self.delivery.deliver(job, bundle)
+                except MissingAsset:
+                    bundle = await self.pipeline.fetch(job.url, force=True)
+                    row = self.database.get_job(job.id)
+                    with self.pipeline.using(bundle):
+                        await self.delivery.deliver(replace(job, progress=row["progress"]), bundle)
+                self.database.complete_job(job.id)
+                logger.info("download_done elapsed_ms=%s", round((time.monotonic() - started) * 1000))
+        except TimeoutError:
+            await self._expire(job, bundle)
         except asyncio.CancelledError:
             row = self.database.get_job(job.id)
             self.database.status(job.id, "uncertain" if row["status"] == "sending" else "queued", "shutdown")
             raise
         except TelegramRetryAfter as error:
-            if job.attempts <= self.settings.retries:
-                self.database.status(job.id, "queued", "telegram_rate_limit", delay=error.retry_after + 1)
+            delay = error.retry_after + 1
+            if self.database.request_remaining(job.id, self.settings.request_timeout) <= delay:
+                # Telegram explicitly rejected this request, so no upload is in flight.
+                self.database.status(job.id, "running")
+                await self._expire(job, bundle)
+            elif job.attempts <= self.settings.retries:
+                self.database.status(job.id, "queued", "telegram_rate_limit", delay=delay)
             else:
                 self.database.status(job.id, "failed", "telegram_rate_limit")
                 self.database.offer_retry(job.id)
@@ -119,8 +132,13 @@ class JobQueue:
             if not isinstance(error, TelegramForbiddenError):
                 await self._notify(job, T.SERVICES_JOBS_FILE_REJECTED)
         except MediaError as error:
+            remaining = self.database.request_remaining(job.id, self.settings.request_timeout)
+            delay = min(30, 2**job.attempts)
+            if error.code == "request_expired" or remaining <= 0 or (error.retryable and remaining <= delay):
+                await self._expire(job, bundle)
+                return
             if error.retryable and job.attempts <= self.settings.retries:
-                self.database.status(job.id, "queued", error.code, delay=min(30, 2**job.attempts))
+                self.database.status(job.id, "queued", error.code, delay=delay)
             else:
                 self.database.status(job.id, "failed", error.code)
                 if error.retryable:
@@ -156,6 +174,25 @@ class JobQueue:
             logger.exception("download_failed stage=%s code=internal_error", stage)
             await self._notify(job, T.SERVICES_JOBS_INTERNAL_ERROR)
 
+    async def _expire(self, job: Job, bundle=None) -> None:
+        row = self.database.get_job(job.id)
+        pieces = (len(bundle.items(job.mode)) + 9) // 10 if bundle else 0
+        if pieces and row["progress"] >= pieces:
+            # All media has accepted receipts; an optional keyboard edit timed out.
+            self.database.complete_job(job.id)
+            return
+        if row["status"] == "sending":
+            # A cancelled upload may already have been accepted by Telegram.
+            self.database.status(job.id, "uncertain", "delivery_uncertain")
+            await self._notify(job, T.SERVICES_JOBS_SEND_UNCERTAIN)
+        else:
+            self.database.status(job.id, "failed", "request_expired")
+            self.database.offer_retry(job.id)
+            await self._notify(
+                job, T.DOWNLOAD_TIME_LIMIT.format(seconds=int(self.settings.request_timeout)), retry=True
+            )
+        logger.info("download_deadline progress=%s", row["progress"])
+
     async def _notify(self, job: Job, message: str, *, retry: bool = False) -> None:
         markup = None
         if retry:
@@ -165,8 +202,9 @@ class JobQueue:
                 ]
             )
         try:
-            await self.delivery.text(job.destination, message, markup)
-        except TelegramAPIError:
+            async with asyncio.timeout(5):
+                await self.delivery.text(job.destination, message, markup)
+        except (TelegramAPIError, TimeoutError):
             logger.warning("job=%s notification unavailable", job.id)
 
     async def _maintenance(self) -> None:

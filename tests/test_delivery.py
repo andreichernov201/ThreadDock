@@ -1,3 +1,4 @@
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -71,6 +72,21 @@ class DeliveryTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(MediaError):
             await self.delivery.deliver(job, self.bundle())
         self.bot.send_video.assert_not_awaited()
+
+    async def test_expired_album_never_starts_the_next_piece(self):
+        job, bundle = self.job(mode="photos"), self.bundle(photos=11)
+
+        async def accepted(**kwargs):
+            self.database.connection.execute("UPDATE jobs SET requested_at=? WHERE id=?", (time.time() - 61, job.id))
+            self.database.connection.commit()
+            return [sent(index + 1, "document") for index in range(10)]
+
+        self.bot.send_media_group.side_effect = accepted
+        with self.assertRaises(MediaError) as caught:
+            await self.delivery.deliver(job, bundle)
+        self.assertEqual(caught.exception.code, "request_expired")
+        self.assertEqual(self.database.get_job(job.id)["progress"], 1)
+        self.bot.send_document.assert_not_awaited()
 
     async def test_business_route_carries_connection_and_reply(self):
         self.database.save_connection("conn", 99, True, True)
