@@ -63,6 +63,8 @@ class Settings:
     deno: str = "deno"
     cookies_file: Path | None = None
     tiktok_live_photos: bool = True
+    slideshow_seconds: int = 3
+    live_photo_limit: int = 0
     groups_enabled: frozenset[int] = frozenset()
     business_enabled: bool = True
     business_chats: frozenset[int] = frozenset()

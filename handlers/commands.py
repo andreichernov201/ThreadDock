@@ -35,6 +35,7 @@ async def status_command(message: Message, app: Application) -> None:
     names = {
         "queued": T.HANDLERS_COMMANDS_STATUS_PENDING,
         "running": T.HANDLERS_COMMANDS_STATUS_RUNNING,
+        "ready": T.HANDLERS_COMMANDS_STATUS_PENDING,
         "sending": T.HANDLERS_COMMANDS_STATUS_SENDING,
         "done": T.HANDLERS_COMMANDS_STATUS_DONE,
         "failed": T.HANDLERS_COMMANDS_STATUS_FAILED,

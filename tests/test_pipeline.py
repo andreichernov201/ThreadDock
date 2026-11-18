@@ -1,10 +1,10 @@
 import asyncio
 import unittest
 from dataclasses import replace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from core.errors import MediaError
-from core.models import Asset
+from core.models import Asset, RenderOptions
 from services.links import normalize_url
 from services.pipeline import KeyedLocks, MediaPipeline
 from tests.support import DatabaseFixture
@@ -98,6 +98,20 @@ class PipelineTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         second = await self.pipeline.fetch("https://youtu.be/abc?si=two")
         self.assertEqual(first, second)
         self.pipeline.video.download.assert_awaited_once()
+
+    async def test_custom_render_has_own_cache_and_does_not_change_shared_tools(self):
+        url = "https://youtu.be/abc"
+        base = normalize_url(url).cache_key
+        render = RenderOptions(5, 10)
+        with patch("services.pipeline.MediaTools", return_value=self.pipeline.tools) as constructor:
+            custom = await self.pipeline.fetch(url, render=render)
+        self.assertEqual(constructor.call_args.args[0].slideshow_seconds, 5)
+        self.assertEqual(constructor.call_args.args[0].live_photo_limit, 10)
+        default = await self.pipeline.fetch(url)
+        self.assertNotEqual(default.directory, custom.directory)
+        self.assertEqual(self.database.get_cache(base), default)
+        self.assertEqual(self.database.get_cache(render.cache_key(base)), custom)
+        self.assertEqual(self.pipeline.settings.slideshow_seconds, 3)
 
     async def test_missing_motion_is_refetched_instead_of_freezing_a_partial_result(self):
         first = await self.pipeline.fetch("https://youtu.be/abc")

@@ -12,7 +12,7 @@ from archive.web import start_web_server
 from config import load_settings
 from core import texts as T
 from core.logging import configure_logging
-from handlers import archive, business, callbacks, commands, links, start
+from handlers import archive, business, callbacks, commands, links, preferences, start
 from services.application import Application
 from services.http import PublicHttp
 from services.runtime import check_configuration, validate_runtime
@@ -46,7 +46,13 @@ async def main() -> None:
                 app.archive.bot_username = identity.username or ""
                 dispatcher = Dispatcher(app=app)
                 dispatcher.include_routers(
-                    start.router, archive.router, commands.router, callbacks.router, business.router, links.router
+                    start.router,
+                    archive.router,
+                    preferences.router,
+                    commands.router,
+                    callbacks.router,
+                    business.router,
+                    links.router,
                 )
 
                 @dispatcher.errors()
