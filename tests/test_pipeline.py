@@ -39,6 +39,21 @@ class PipelineTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
             await self.pipeline.fetch("https://www.tiktok.com/@someone/photo/123")
         self.pipeline.video.download.assert_not_awaited()
 
+    async def test_direct_size_failure_does_not_restart_other_extractors(self):
+        self.pipeline.photos.download = AsyncMock(side_effect=MediaError("Too large", code="file_too_large"))
+        with self.assertRaises(MediaError):
+            await self.pipeline.fetch("https://vt.tiktok.com/abc/")
+        self.pipeline.video.download.assert_not_awaited()
+        self.pipeline.gallery.download.assert_not_awaited()
+
+    async def test_video_duration_failure_does_not_restart_photo_or_gallery_extractors(self):
+        self.pipeline.photos.download = AsyncMock()
+        self.pipeline.video.download.side_effect = MediaError("Too long", code="duration_limit")
+        with self.assertRaises(MediaError):
+            await self.pipeline.fetch("https://www.tiktok.com/@user/video/123")
+        self.pipeline.photos.download.assert_not_awaited()
+        self.pipeline.gallery.download.assert_not_awaited()
+
     async def test_short_tiktok_link_preserves_photo_failure_on_video_fallback(self):
         from core.errors import MediaError
 

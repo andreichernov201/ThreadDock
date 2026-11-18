@@ -67,15 +67,66 @@ class MediaTools:
         return parse_probe(result.stdout)
 
     async def ffmpeg(self, arguments: list[str], directory: Path) -> None:
-        result = await run_process(
-            [self.settings.ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y", *arguments],
-            timeout=self.settings.process_timeout,
-            cwd=directory,
-            watch_directory=directory,
-            max_disk_bytes=self.settings.max_download_bytes * 4,
-        )
+        try:
+            result = await run_process(
+                [
+                    self.settings.ffmpeg,
+                    "-nostdin",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-threads",
+                    "2",
+                    "-filter_threads",
+                    "1",
+                    *arguments,
+                ],
+                timeout=self.settings.process_timeout,
+                cwd=directory,
+                watch_directory=directory,
+                max_disk_bytes=self.settings.max_download_bytes * 4,
+            )
+        except MediaError as error:
+            if error.code == "timeout":
+                raise MediaError(T.SERVICES_MEDIA_PREPARATION_FAILED, code="processing_timeout") from error
+            raise
         if result.returncode:
             raise MediaError(T.SERVICES_MEDIA_PREPARATION_FAILED, code="conversion_failed")
+
+    def _fit_options(self, info: MediaInfo) -> list[str]:
+        budget = int(self.settings.max_upload_bytes * 8 * 0.90 / info.duration)
+        audio_bitrate = (128000 if budget >= 400000 else 64000) if info.audio_codec else 0
+        bitrate = budget - audio_bitrate
+        if bitrate < 80000:
+            raise MediaError(T.SERVICES_MEDIA_VIDEO_TOO_LONG, code="file_too_large")
+        scale = (
+            "fps=24,scale=640:640:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=fast_bilinear,setsar=1"
+            if bitrate < 400000
+            else "scale=trunc(iw/2)*2:trunc(ih/2)*2"
+        )
+        return [
+            "-vf",
+            scale,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast" if bitrate < 400000 else "veryfast",
+            "-threads",
+            "2",
+            "-b:v",
+            str(bitrate),
+            "-maxrate",
+            str(bitrate),
+            "-bufsize",
+            str(bitrate * 2),
+            "-pix_fmt",
+            "yuv420p",
+            "-c:a",
+            "aac",
+            "-b:a",
+            str(audio_bitrate or 64000),
+        ]
 
     async def compatible_video(self, source: Path, directory: Path) -> tuple[Asset, bool]:
         info = await self.probe(source)
@@ -95,7 +146,10 @@ class MediaTools:
             "-sn",
             "-dn",
         ]
-        if compatible:
+        if source.stat().st_size > self.settings.max_upload_bytes:
+            # Fit oversized sources in the first encode instead of converting twice.
+            arguments += self._fit_options(info)
+        elif compatible:
             arguments += ["-c", "copy"]
         else:
             arguments += [
@@ -116,12 +170,6 @@ class MediaTools:
             ]
         await self.ffmpeg(arguments + ["-movflags", "+faststart", str(target)], directory)
         if target.stat().st_size > self.settings.max_upload_bytes:
-            # Telegram's transport limit is technical; keep resolution and adapt bitrate.
-            bitrate = int(self.settings.max_upload_bytes * 8 * 0.90 / info.duration) - (
-                128000 if info.audio_codec else 0
-            )
-            if bitrate < 150000:
-                raise MediaError(T.SERVICES_MEDIA_VIDEO_TOO_LONG, code="file_too_large")
             smaller = directory / "fitted.mp4"
             await self.ffmpeg(
                 [
@@ -133,24 +181,7 @@ class MediaTools:
                     "0:v:0",
                     "-map",
                     "0:a:0?",
-                    "-vf",
-                    "scale=trunc(iw/2)*2:trunc(ih/2)*2",
-                    "-c:v",
-                    "libx264",
-                    "-preset",
-                    "veryfast",
-                    "-b:v",
-                    str(bitrate),
-                    "-maxrate",
-                    str(bitrate),
-                    "-bufsize",
-                    str(bitrate * 2),
-                    "-pix_fmt",
-                    "yuv420p",
-                    "-c:a",
-                    "aac",
-                    "-b:a",
-                    "128k",
+                    *self._fit_options(info),
                     "-movflags",
                     "+faststart",
                     str(smaller),

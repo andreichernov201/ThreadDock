@@ -25,82 +25,135 @@ class ResolverTests(unittest.IsolatedAsyncioTestCase):
 
     def response(self, **changes):
         data = {
-            "id": self.identifier,
-            "images": ["https://p.tiktokcdn.com/still-one~small.jpeg", "https://p.tiktokcdn.com/still-two~small.jpeg"],
-            "live_images": [None, "https://v.tiktokcdn-us.com/motion.mp4"],
+            "id_str": self.identifier,
+            "image_post_info": {
+                "images": [
+                    {"display_image": {"url_list": [self.images[0][0]]}},
+                    {
+                        "display_image": {"url_list": [self.images[1][0]]},
+                        "video": {"url_list": ["https://v.tiktokcdn-us.com/motion.mp4"]},
+                    },
+                ]
+            },
         }
         data.update(changes)
-        return json.dumps({"code": 0, "data": data}).encode()
+        return json.dumps({"status_code": 0, "items": [data]}).encode()
 
-    async def test_video_fallback_rejects_wrong_identity_and_untrusted_media(self):
-        for identifier, url, expected in (
-            (self.identifier, "https://www.tikwm.com/video/media/clip", True),
-            ("7000000000000000002", "https://www.tikwm.com/video/media/clip", False),
-            (self.identifier, "https://127.0.0.1/clip", False),
-            (self.identifier, "https://evil.example/clip", False),
+    def test_keeps_live_photo_in_second_position(self):
+        self.assertEqual(
+            parse_live_photos(self.response(), self.identifier, self.images),
+            ((), ("https://v.tiktokcdn-us.com/motion.mp4",)),
+        )
+
+    def test_wrong_post_or_still_order_is_rejected(self):
+        self.assertIsNone(parse_live_photos(self.response(id_str="7000000000000000002"), self.identifier, self.images))
+        self.assertIsNone(parse_live_photos(self.response(), self.identifier, self.images[::-1]))
+
+    def test_media_must_belong_to_tiktok(self):
+        for url in (
+            "http://v.tiktokcdn.com/clip",
+            "https://127.0.0.1/clip",
+            "https://tiktokcdn.com.evil.example/clip",
+            "https://resolver.example/clip",
+            "https://user:secret@v.tiktokcdn.com/clip",
         ):
-            body = json.dumps({"code": 0, "data": {"id": identifier, "play": url}}).encode()
-            http = SimpleNamespace(get_browser=AsyncMock(return_value=SimpleNamespace(body=body)))
-            self.assertEqual(bool(await public_video_urls(http, self.identifier)), expected)
+            body = json.loads(self.response())
+            body["items"][0]["image_post_info"]["images"][1]["video"]["url_list"] = [url]
+            self.assertIsNone(parse_live_photos(json.dumps(body).encode(), self.identifier, self.images))
+
+    async def test_lookup_contacts_only_first_party_and_preserves_photos_on_timeout(self):
+        http = SimpleNamespace(get_browser=AsyncMock(side_effect=TimeoutError()))
+        self.assertIsNone(await public_live_photos(http, self.identifier, self.images))
+        self.assertEqual(
+            http.get_browser.call_args.args[0],
+            f"https://www.tiktok.com/player/api/v1/items?item_ids={self.identifier}&aid=1988",
+        )
+        http.get_browser.reset_mock()
+        await public_live_photos(http, "invalid/?private=token", self.images)
+        http.get_browser.assert_not_awaited()
+
+    def test_absent_motion_remains_unknown_rather_than_asserting_static(self):
+        body = json.loads(self.response())
+        del body["items"][0]["image_post_info"]["images"][1]["video"]
+        self.assertIsNone(parse_live_photos(json.dumps(body).encode(), self.identifier, self.images))
+        self.assertIsNone(parse_live_photos(b"not-json", self.identifier, self.images))
 
     def test_private_video_page_is_not_eligible_for_public_fallback(self):
         from services.tiktok import parse_video_page
 
         node = {"id": self.identifier, "privateItem": True, "video": {"playAddr": "https://cdn.example/clip"}}
-        page = '<script id="SIGI_STATE">' + json.dumps(node) + "</script>"
-        self.assertIsNone(parse_video_page(page, self.identifier))
+        self.assertIsNone(
+            parse_video_page('<script id="SIGI_STATE">' + json.dumps(node) + "</script>", self.identifier)
+        )
 
-    def test_keeps_live_photo_in_second_position(self):
-        result = parse_live_photos(self.response(), self.identifier, self.images)
-        self.assertEqual(result, ((), ("https://v.tiktokcdn-us.com/motion.mp4",)))
-
-    def test_wrong_post_or_still_order_is_rejected(self):
-        for changes in (
-            {"id": "7000000000000000002"},
-            {
-                "images": [
-                    "https://p.tiktokcdn.com/still-two~small.jpeg",
-                    "https://p.tiktokcdn.com/still-one~small.jpeg",
-                ]
-            },
-            {"live_images": ["https://v.tiktokcdn-us.com/motion.mp4"]},
-        ):
-            with self.subTest(changes=changes):
-                self.assertIsNone(parse_live_photos(self.response(**changes), self.identifier, self.images))
-
-    def test_media_must_belong_to_tiktok_cdn(self):
-        for url in (
-            "http://v.tiktokcdn.com/clip",
-            "https://127.0.0.1/clip",
-            "https://tiktokcdn.com.evil.example/clip",
-            "https://www.tikwm.com/clip",
-            "https://user:secret@v.tiktokcdn.com/clip",
-        ):
-            with self.subTest(url=url):
-                self.assertIsNone(
-                    parse_live_photos(self.response(live_images=[None, url]), self.identifier, self.images)
-                )
-
-    async def test_lookup_sends_only_id_and_preserves_photos_on_timeout(self):
-        http = SimpleNamespace(get_browser=AsyncMock(side_effect=TimeoutError()))
-        self.assertIsNone(await public_live_photos(http, self.identifier, self.images))
-        self.assertEqual(http.get_browser.call_args.args[0], f"https://www.tikwm.com/api/?url={self.identifier}&hd=1")
-        http.get_browser.reset_mock()
-        await public_live_photos(http, "invalid/?private=token", self.images)
-        http.get_browser.assert_not_awaited()
-
-    def test_private_state_is_not_eligible_for_lookup(self):
-        post = {
+    def test_private_photo_state_is_not_eligible_for_lookup(self):
+        node = {
             "id": self.identifier,
             "privateItem": True,
             "imagePost": {"images": [{"imageURL": {"urlList": self.images[0]}}]},
         }
-        parsed = parse_photo_page('<script id="SIGI_STATE">' + json.dumps(post) + "</script>", self.identifier)
-        self.assertFalse(parsed.is_public)
+        self.assertFalse(
+            parse_photo_page('<script id="SIGI_STATE">' + json.dumps(node) + "</script>", self.identifier).is_public
+        )
 
-    def test_verified_post_without_motion_is_distinct_from_resolver_failure(self):
-        self.assertEqual(parse_live_photos(self.response(live_images=[]), self.identifier, self.images), ((), ()))
-        self.assertIsNone(parse_live_photos(b"not-json", self.identifier, self.images))
+    async def test_player_prefers_h264_and_preserves_signed_resource(self):
+        from urllib.parse import urlsplit
+
+        signed = "https://www.tiktok.com/aweme/v1/play/?video_id=clip&file_id=file&sign=unchanged"
+        body = {
+            "status_code": 0,
+            "items": [
+                {
+                    "id_str": self.identifier,
+                    "video_info": {
+                        "profiles": [
+                            {
+                                "codec_type": "h265",
+                                "bitrate": 900,
+                                "play_addr": {"url_list": ["https://v.tiktokcdn.com/hevc"]},
+                            },
+                            {"codec_type": "h264", "bitrate": 400, "play_addr": {"url_list": [signed]}},
+                        ]
+                    },
+                }
+            ],
+        }
+        http = SimpleNamespace(get_browser=AsyncMock(return_value=SimpleNamespace(body=json.dumps(body).encode())))
+        urls = await public_video_urls(http, self.identifier)
+        self.assertEqual(urlsplit(urls[0]).hostname, "api16-normal-useast8.tiktokv.us")
+        self.assertEqual(urlsplit(urls[0]).query, urlsplit(signed).query)
+        body["items"][0]["id_str"] = "7000000000000000002"
+        http.get_browser.return_value.body = json.dumps(body).encode()
+        self.assertEqual(await public_video_urls(http, self.identifier), ())
+
+
+class DirectVideoTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_conversion_timeout_never_downloads_and_encodes_each_alternate_again(self):
+        from services.links import normalize_url
+
+        node = {
+            "id": "7000000000000000001",
+            "video": {"playAddr": ["https://v.tiktokcdn.com/one.mp4", "https://v.tiktokcdn.com/two.mp4"]},
+        }
+        http = SimpleNamespace(
+            get=AsyncMock(
+                return_value=SimpleNamespace(
+                    url="https://www.tiktok.com/@user/video/7000000000000000001",
+                    body=('<script id="SIGI_STATE">' + json.dumps(node) + "</script>").encode(),
+                )
+            ),
+            get_browser=AsyncMock(return_value=SimpleNamespace(body=b'{"status_code":1}')),
+        )
+        media = SimpleNamespace(
+            probe=AsyncMock(return_value=SimpleNamespace(video_codec="h264")),
+            compatible_video=AsyncMock(side_effect=MediaError("slow encode", code="timeout", retryable=True)),
+        )
+        photos = TikTokPhotos(self.settings, http, media)
+        photos._download_candidates = AsyncMock()
+        with self.assertRaises(MediaError):
+            await photos.download(normalize_url(http.get.return_value.url), self.root)
+        photos._download_candidates.assert_awaited_once()
+        media.compatible_video.assert_awaited_once()
 
 
 class MotionBundleTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):

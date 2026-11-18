@@ -1,7 +1,7 @@
 import json
 import unittest
 from dataclasses import replace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from core.errors import MediaError
 from services.media import MediaInfo, MediaTools, parse_probe
@@ -29,6 +29,17 @@ class ProbeTests(unittest.TestCase):
 
 
 class SlideshowLimitTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_encoding_timeout_is_not_retried_as_network_failure(self):
+        tools = MediaTools(self.settings)
+        with patch(
+            "services.media.run_process",
+            new=AsyncMock(side_effect=MediaError("deadline", code="timeout", retryable=True)),
+        ):
+            with self.assertRaises(MediaError) as caught:
+                await tools.ffmpeg(["-f", "null", "-"], self.root)
+        self.assertEqual(caught.exception.code, "processing_timeout")
+        self.assertFalse(caught.exception.retryable)
+
     async def test_live_duration_total_is_checked_before_rendering(self):
         tools = MediaTools(replace(self.settings, max_duration=5))
         tools.probe = AsyncMock(return_value=MediaInfo(3.4, 160, 120, "h264", ""))

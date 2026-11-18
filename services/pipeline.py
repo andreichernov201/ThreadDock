@@ -26,6 +26,20 @@ from storage.database import Database
 logger = logging.getLogger(__name__)
 
 
+def preserve_limits(error: MediaError) -> None:
+    # Re-running another extractor cannot make an over-limit asset admissible.
+    if error.code in {
+        "file_too_large",
+        "duration_limit",
+        "photo_count",
+        "disk_full",
+        "processing_timeout",
+        "conversion_failed",
+        "invalid_output",
+    }:
+        raise error
+
+
 class KeyedLocks:
     def __init__(self):
         self._entries: dict[str, tuple[asyncio.Lock, int]] = {}
@@ -103,6 +117,7 @@ class MediaPipeline:
                         try:
                             bundle = await self.photos.download(link, directory)
                         except MediaError as error:
+                            preserve_limits(error)
                             photo_error = error
                             logger.info("tiktok_photo_probe_failed code=%s", error.code)
                     if bundle is None and link.platform in {"Instagram", "Reddit", "Pinterest", "TikTok", "X"}:
@@ -115,6 +130,7 @@ class MediaPipeline:
                             try:
                                 bundle = await self.gallery.download(link, directory)
                             except MediaError as error:
+                                preserve_limits(error)
                                 logger.info("gallery_probe_failed platform=%s code=%s", link.platform, error.code)
                                 if isinstance(photo_error, PhotoModeError):
                                     raise photo_error from error
@@ -123,12 +139,14 @@ class MediaPipeline:
                         try:
                             source, title = await self.video.download(link, directory)
                         except MediaError as video_error:
+                            preserve_limits(video_error)
                             if link.platform == "TikTok" and "/video/" in link.url:
                                 # TikTok sometimes serves photo posts at a /video/ route.
                                 # Only check after video extraction failed.
                                 try:
                                     bundle = await self.photos.download(link, directory)
                                 except MediaError as error:
+                                    preserve_limits(error)
                                     photo_error = error
                                     logger.info("tiktok_photo_fallback_failed code=%s", error.code)
                             if bundle is None:
@@ -136,6 +154,7 @@ class MediaPipeline:
                                     try:
                                         bundle = await self.gallery.download(link, directory)
                                     except MediaError as error:
+                                        preserve_limits(error)
                                         logger.info("gallery_fallback_failed code=%s", error.code)
                             if bundle is None:
                                 if photo_error and video_error.code == "extractor_failed":

@@ -39,6 +39,14 @@ if [[ -n "$public_host" ]]; then
     -v "$base/shared:/config" "$image" python scripts/configure_web.py /config/.env "$public_host"
 fi
 compose=(docker compose -p threaddock --env-file "$base/shared/.env" --env-file "$release/image.env" -f "$release/compose.production.yaml")
+cookie_options=()
+rollback_cookie_options=()
+if [[ -s "$base/shared/instagram.cookies.txt" ]]; then
+  export COOKIES_HOST_FILE="$base/shared/instagram.cookies.txt"
+  compose+=(-f "$release/compose.cookies.yaml")
+  cookie_options=(-v "$COOKIES_HOST_FILE:/run/secrets/cookies.txt:ro" -e COOKIES_FILE=/run/secrets/cookies.txt)
+  rollback_cookie_options=(-f "$release/compose.cookies.yaml")
+fi
 web_enabled=false
 if [[ -f "$base/shared/web.enabled" ]] || grep -Eq '^ARCHIVE_DOMAIN=[^[:space:]#]+' "$base/shared/.env"; then
   web_enabled=true
@@ -46,6 +54,7 @@ if [[ -f "$base/shared/web.enabled" ]] || grep -Eq '^ARCHIVE_DOMAIN=[^[:space:]#
 fi
 "${compose[@]}" config --quiet
 docker run --rm --env-file "$base/shared/.env" --read-only \
+  "${cookie_options[@]}" \
   --tmpfs /tmp:size=128m,mode=1777 --cap-drop ALL --security-opt no-new-privileges:true \
   "$image" python main.py --check
 if [[ "$web_enabled" == true ]]; then "${compose[@]}" pull caddy; fi
@@ -66,7 +75,7 @@ on_failure() {
     # No new application has run yet, so its database cannot have migrated.
     (cd "$old_release" && docker compose -p threaddock \
       --env-file "$base/shared/.env" --env-file "$old_release/image.env" \
-      -f compose.production.yaml up -d --no-build --pull never bot) || true
+      -f compose.production.yaml "${rollback_cookie_options[@]}" up -d --no-build --pull never bot) || true
   fi
   printf '%s\n' 'Deployment failed. Inspect logs and backups before retrying; no database was restored automatically.' >&2
 }
