@@ -1,12 +1,14 @@
 import time
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from aiogram.exceptions import TelegramBadRequest
-from aiogram.methods import SendVideo
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
+from aiogram.methods import SendMessage, SendVideo
 
 from core.errors import MediaError, MissingAsset
+from core.models import Asset
 from services.delivery import TelegramDelivery
 from tests.support import DatabaseFixture
 
@@ -101,3 +103,45 @@ class DeliveryTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
     async def test_unavailable_audio_has_clear_error(self):
         with self.assertRaisesRegex(MediaError, "нет"):
             await self.delivery.deliver(self.job(mode="audio"), self.bundle())
+
+    async def test_album_controls_are_a_separate_reply_to_the_album(self):
+        self.database.set_group(-123, True)
+        job = self.job(chat_id=-123, mode="photos")
+        job = replace(job, destination=replace(job.destination, thread_id=7))
+        bundle = replace(self.bundle(photos=2), audio=Asset("audio.m4a", "audio", 4))
+        self.bot.send_media_group.return_value = [sent(11, "document"), sent(12, "document")]
+        await self.delivery.deliver(job, bundle)
+        options = self.bot.send_message.call_args.kwargs
+        self.assertEqual(options["chat_id"], -123)
+        self.assertEqual(options["message_thread_id"], 7)
+        self.assertEqual(options["reply_parameters"].message_id, 12)
+        self.assertEqual(options["reply_markup"].inline_keyboard[0][0].callback_data, f"m:{job.id}:audio")
+        self.assertEqual(self.database.get_job(job.id)["progress"], 1)
+
+    async def test_album_controls_keep_business_connection(self):
+        self.database.save_connection("conn", 99, True, True)
+        self.database.touch_business_chat("conn", 10, time.time())
+        job = self.job(business_id="conn", mode="photos")
+        bundle = replace(self.bundle(photos=2), audio=Asset("audio.m4a", "audio", 4))
+        self.bot.send_media_group.return_value = [sent(11, "document"), sent(12, "document")]
+        await self.delivery.deliver(job, bundle)
+        self.assertEqual(self.bot.send_message.call_args.kwargs["business_connection_id"], "conn")
+
+    async def test_failed_control_message_never_replays_accepted_album(self):
+        job = self.job(mode="photos")
+        bundle = replace(self.bundle(photos=2), audio=Asset("audio.m4a", "audio", 4))
+        self.bot.send_media_group.return_value = [sent(11, "document"), sent(12, "document")]
+        self.bot.send_message.side_effect = TelegramNetworkError(
+            method=SendMessage(chat_id=10, text="controls"), message="lost response"
+        )
+        await self.delivery.deliver(job, bundle)
+        self.database.recover()
+        await self.delivery.deliver(self.database.claim(), bundle)
+        self.bot.send_media_group.assert_awaited_once()
+        self.bot.send_message.assert_awaited_once()
+
+    async def test_album_without_extra_assets_has_no_control_message(self):
+        job = self.job(mode="photos")
+        self.bot.send_media_group.return_value = [sent(11, "document"), sent(12, "document")]
+        await self.delivery.deliver(job, self.bundle(photos=2))
+        self.bot.send_message.assert_not_awaited()

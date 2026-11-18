@@ -147,7 +147,7 @@ class ReleaseDeliveryTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
             send_media_group=AsyncMock(
                 return_value=[photo(11), SimpleNamespace(message_id=12, video=SimpleNamespace(file_id="video-12"))]
             ),
-            edit_message_reply_markup=AsyncMock(),
+            send_message=AsyncMock(),
         )
         self.delivery = TelegramDelivery(self.bot, self.database, self.settings)
 
