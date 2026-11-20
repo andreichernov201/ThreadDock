@@ -1,7 +1,12 @@
 import unittest
+from dataclasses import replace
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
+from core.errors import MediaError
 from services.links import normalize_url
-from services.ytdlp import build_command, source_error
+from services.processes import ProcessResult
+from services.ytdlp import YtDlpAdapter, build_command, source_error
 from tests.support import DatabaseFixture
 
 
@@ -36,3 +41,34 @@ class AdapterTests(DatabaseFixture, unittest.TestCase):
         self.assertTrue(error.retryable)
         self.assertNotIn("private", str(error))
         self.assertNotIn("https", str(error))
+
+
+class SessionPreservationTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_failed_extractor_cannot_erase_the_installed_session(self):
+        original = self.root / "installed-session.txt"
+        original.write_bytes(b"fixture-session")
+        settings = replace(self.settings, cookies_file=original)
+        copies = []
+
+        async def rejected(command, **kwargs):
+            from pathlib import Path
+
+            cookie_copy = Path(command[command.index("--cookies") + 1])
+            copies.append(cookie_copy.read_bytes())
+            cookie_copy.write_bytes(b"")
+            return ProcessResult(1, b"", b"401 Unauthorized")
+
+        with (
+            patch("services.ytdlp.SafeProxy") as proxy,
+            patch("services.ytdlp.run_process", new=AsyncMock(side_effect=rejected)),
+        ):
+            proxy.return_value.__aenter__.return_value = SimpleNamespace(url="http://guard")
+            for name in ("first", "second"):
+                work = self.root / name
+                work.mkdir()
+                with self.assertRaises(MediaError):
+                    await YtDlpAdapter(settings).download(
+                        normalize_url("https://www.instagram.com/reel/example/"), work
+                    )
+        self.assertEqual(copies, [b"fixture-session", b"fixture-session"])
+        self.assertEqual(original.read_bytes(), b"fixture-session")

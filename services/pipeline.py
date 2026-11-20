@@ -16,6 +16,7 @@ from core.errors import MediaError
 from core.models import MediaBundle, RenderOptions
 from services.gallery import GalleryAdapter
 from services.http import PublicHttp
+from services.instagram import InstagramEmbed, InstagramGalleryError, video_post_id
 from services.links import normalize_url
 from services.media import MediaTools
 from services.processes import directory_size, remove_directory
@@ -66,6 +67,7 @@ class MediaPipeline:
         self.video = YtDlpAdapter(settings)
         self.photos = TikTokPhotos(settings, http, self.tools)
         self.gallery = GalleryAdapter(settings, http, self.tools)
+        self.instagram = InstagramEmbed(settings, http)
         self.locks = KeyedLocks()
         self.leases: dict[Path, int] = {}
         self.work = settings.data_dir / "work"
@@ -92,6 +94,7 @@ class MediaPipeline:
 
     async def fetch(self, url: str, *, force: bool = False, render: RenderOptions = RenderOptions()) -> MediaBundle:
         link = normalize_url(url)
+        instagram_video = link.platform == "Instagram" and video_post_id(link.url) is not None
         cache_key = render.cache_key(link.cache_key)
         tools, photos, gallery = self.tools, self.photos, self.gallery
         if render != RenderOptions():
@@ -122,6 +125,18 @@ class MediaPipeline:
                 async with asyncio.timeout(self.settings.download_timeout + self.settings.process_timeout * 2):
                     bundle = None
                     photo_error = None
+                    instagram_gallery = False
+                    if instagram_video:
+                        try:
+                            entries = await self.instagram.entries(link)
+                            instagram_gallery = len(entries) > 1 or any(
+                                info.get("type") == "image" for _, info in entries
+                            )
+                            bundle = await gallery.render_entries(link, directory, entries, extract_audio=True)
+                        except MediaError as error:
+                            preserve_limits(error)
+                            instagram_gallery = instagram_gallery or isinstance(error, InstagramGalleryError)
+                            logger.info("instagram_embed_failed code=%s", error.code)
                     if link.platform == "TikTok" and "/video/" not in link.url:
                         try:
                             bundle = await photos.download(link, directory)
@@ -130,10 +145,13 @@ class MediaPipeline:
                             photo_error = error
                             logger.info("tiktok_photo_probe_failed code=%s", error.code)
                     if bundle is None and link.platform in {"Instagram", "Reddit", "Pinterest", "TikTok", "X"}:
-                        # For ordinary TikTok videos, prefer the quality-aware video
-                        # extractor; gallery extraction is its independent fallback.
+                        # Reels and ordinary TikTok videos use the video extractor
+                        # first. Gallery discovery can otherwise consume the whole
+                        # request budget before an authenticated video is attempted.
                         prefer_gallery = (
-                            link.platform != "TikTok" or isinstance(photo_error, PhotoModeError) or "/stor" in link.url
+                            (link.platform != "TikTok" and (not instagram_video or instagram_gallery))
+                            or isinstance(photo_error, PhotoModeError)
+                            or "/stor" in link.url
                         )
                         if prefer_gallery:
                             try:
@@ -143,6 +161,8 @@ class MediaPipeline:
                                 logger.info("gallery_probe_failed platform=%s code=%s", link.platform, error.code)
                                 if isinstance(photo_error, PhotoModeError):
                                     raise photo_error from error
+                                if instagram_gallery:
+                                    raise
                                 photo_error = photo_error or error
                     if bundle is None:
                         try:
@@ -159,7 +179,7 @@ class MediaPipeline:
                                     photo_error = error
                                     logger.info("tiktok_photo_fallback_failed code=%s", error.code)
                             if bundle is None:
-                                if link.platform in {"TikTok", "X"}:
+                                if link.platform in {"TikTok", "X"} or instagram_video:
                                     try:
                                         bundle = await gallery.download(link, directory)
                                     except MediaError as error:

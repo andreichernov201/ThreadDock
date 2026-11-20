@@ -5,6 +5,7 @@ copied into this MIT project and no user configuration is loaded. TikTok's
 optional public motion discovery is shared with the direct page adapter.
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -116,6 +117,11 @@ class GalleryAdapter:
         if result.returncode:
             raise source_error(result.stderr)
         entries = parse_gallery(result.stdout, self.settings.max_photos, story_id)
+        return await self.render_entries(link, directory, entries)
+
+    async def render_entries(
+        self, link: VideoLink, directory: Path, entries: list[tuple[str, dict]], *, extract_audio: bool = False
+    ) -> MediaBundle:
         # The same motion discovery/rendering must run when the independent
         # extractor succeeds after the direct page failed.
         image_entries = [(url, metadata) for url, metadata in entries if metadata.get("type") == "image"]
@@ -173,6 +179,12 @@ class GalleryAdapter:
                 raise MediaError(T.SERVICES_PROCESSES_DOWNLOAD_TOO_LARGE, code="file_too_large")
         if not assets:
             raise MediaError(T.SERVICES_YTDLP_UNAVAILABLE, code="unavailable")
+        if extract_audio and audio is None and len(assets) == 1 and assets[0].kind == "video":
+            try:
+                async with asyncio.timeout(min(10, self.settings.process_timeout)):
+                    audio = await self.tools.extract_audio(assets[0].path(directory), directory)
+            except (MediaError, TimeoutError) as error:
+                logger.info("optional_gallery_audio code=%s", getattr(error, "code", "timeout"))
         photos = tuple(asset for asset in assets if asset.kind == "photo")
         if len(photos) == len(assets):
             video, has_audio = None, False

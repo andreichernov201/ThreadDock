@@ -251,6 +251,7 @@ class MediaTools:
             raise MediaError(T.SERVICES_TIKTOK_INVALID_IMAGE, code="invalid_image")
         suitable = (
             source.suffix.lower() in {".jpg", ".jpeg", ".png"}
+            and info.video_codec in {"mjpeg", "png"}
             and source.stat().st_size <= 10_000_000
             and info.width + info.height <= 10000
             and max(info.width, info.height) / min(info.width, info.height) <= 20
