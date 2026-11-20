@@ -333,6 +333,53 @@ class FFmpegIntegrationTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
 
 @unittest.skipUnless(shutil.which("yt-dlp"), "yt-dlp is not installed")
 class ExtractorOptionsTests(DatabaseFixture, unittest.TestCase):
+    def test_instagram_prefers_fullhd_without_changing_other_sites(self):
+        metadata = self.root / "quality.json"
+        formats = [
+            {
+                "format_id": f"video-{resolution}",
+                "url": f"https://cdn.example/{resolution}.mp4",
+                "protocol": "https",
+                "ext": "mp4",
+                "width": resolution,
+                "height": resolution * 16 // 9,
+                "vcodec": "vp9",
+                "acodec": "none",
+            }
+            for resolution in (720, 1080, 1440)
+        ]
+        formats.append(
+            {
+                "format_id": "audio",
+                "url": "https://cdn.example/audio.m4a",
+                "protocol": "https",
+                "ext": "m4a",
+                "vcodec": "none",
+                "acodec": "mp4a",
+            }
+        )
+        metadata.write_text(
+            json.dumps(
+                {"id": "fixture", "title": "Fixture", "extractor": "test", "extractor_key": "Test", "formats": formats}
+            ),
+            encoding="utf-8",
+        )
+        for url, expected in (
+            ("https://www.instagram.com/reel/example/", "video-1080"),
+            ("https://youtu.be/example", "video-1440"),
+        ):
+            command = build_command(self.settings, normalize_url(url), self.root, "http://127.0.0.1:1")
+            command = command[: command.index("--")] + [
+                "--simulate",
+                "--dump-single-json",
+                "--load-info-json",
+                str(metadata),
+            ]
+            result = subprocess.run(command, capture_output=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+            selected = json.loads(result.stdout)
+            self.assertEqual([f["format_id"] for f in selected["requested_formats"]], [expected, "audio"])
+
     def test_real_cli_selects_separate_https_streams_without_network(self):
         metadata = self.root / "fixture.json"
         metadata.write_text(

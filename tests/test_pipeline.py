@@ -93,6 +93,38 @@ class PipelineTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual([path.name for path in bundle.directory.iterdir()], ["video.mp4"])
         self.assertEqual(list(self.pipeline.work.iterdir()), [])
 
+    async def test_instagram_reel_uses_video_without_waiting_for_gallery(self):
+        await self.pipeline.fetch("https://www.instagram.com/reel/example/")
+        self.pipeline.video.download.assert_awaited_once()
+        self.pipeline.gallery.download.assert_not_awaited()
+
+    async def test_instagram_reel_can_fall_back_to_gallery(self):
+        from core.models import MediaBundle
+
+        async def gallery(link, directory):
+            (directory / "video.mp4").write_bytes(b"fixture")
+            return MediaBundle(directory, link.url, link.platform, "Reel", Asset("video.mp4", "video"))
+
+        self.pipeline.video.download.side_effect = MediaError("not available", code="extractor_failed")
+        self.pipeline.gallery.download.side_effect = gallery
+        bundle = await self.pipeline.fetch("https://www.instagram.com/reel/example/")
+        self.assertEqual(bundle.video.filename, "video.mp4")
+        self.pipeline.gallery.download.assert_awaited_once()
+
+    async def test_instagram_photo_posts_still_try_gallery_first(self):
+        from core.models import MediaBundle
+
+        async def gallery(link, directory):
+            (directory / "photo.jpg").write_bytes(b"fixture")
+            return MediaBundle(
+                directory, link.url, link.platform, "Photo", None, originals=(Asset("photo.jpg", "photo"),)
+            )
+
+        self.pipeline.gallery.download.side_effect = gallery
+        bundle = await self.pipeline.fetch("https://www.instagram.com/p/example/")
+        self.assertEqual(len(bundle.originals), 1)
+        self.pipeline.video.download.assert_not_awaited()
+
     async def test_repeated_link_reuses_cache(self):
         first = await self.pipeline.fetch("https://youtu.be/abc?si=one")
         second = await self.pipeline.fetch("https://youtu.be/abc?si=two")

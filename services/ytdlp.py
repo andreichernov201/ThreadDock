@@ -71,6 +71,10 @@ def build_command(settings: Settings, link: VideoLink, directory: Path, proxy: s
         "--output",
         str(directory / "source-%(autonumber)03d.%(ext)s"),
     ]
+    if link.platform == "Instagram":
+        # Higher-resolution VP9 variants can consume the entire minute in
+        # conversion alone. Prefer Full HD while retaining a fallback above it.
+        command += ["--format-sort", "res:1080"]
     if settings.cookies_file:
         # yt-dlp writes back its cookie jar: never modify the operator's original.
         cookies = directory / "cookies.txt"
