@@ -18,6 +18,7 @@ class PipelineTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         self.pipeline.video.download = AsyncMock(side_effect=self.download)
         self.pipeline.tools.compatible_video = AsyncMock(side_effect=self.convert)
         self.pipeline.tools.extract_audio = AsyncMock(return_value=None)
+        self.pipeline.instagram.entries = AsyncMock(side_effect=MediaError("missing", code="instagram_embed_missing"))
 
     async def download(self, link, directory):
         path = directory / "source.mp4"
@@ -97,6 +98,32 @@ class PipelineTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         await self.pipeline.fetch("https://www.instagram.com/reel/example/")
         self.pipeline.video.download.assert_awaited_once()
         self.pipeline.gallery.download.assert_not_awaited()
+
+    async def test_instagram_embed_success_skips_both_cli_extractors(self):
+        from core.models import MediaBundle
+
+        async def render(link, directory, entries, **kwargs):
+            (directory / "native.mp4").write_bytes(b"fixture")
+            return MediaBundle(directory, link.url, link.platform, "Video", Asset("native.mp4", "video"))
+
+        self.pipeline.instagram.entries.side_effect = None
+        self.pipeline.instagram.entries.return_value = [("https://cdninstagram.com/video.mp4", {"type": "video"})]
+        self.pipeline.gallery.render_entries = AsyncMock(side_effect=render)
+        await self.pipeline.fetch("https://www.instagram.com/reel/example/")
+        self.pipeline.video.download.assert_not_awaited()
+        self.pipeline.gallery.download.assert_not_awaited()
+        self.assertTrue(self.pipeline.gallery.render_entries.call_args.kwargs["extract_audio"])
+
+    async def test_known_instagram_carousel_cannot_fall_back_to_partial_video(self):
+        from services.instagram import InstagramGalleryError
+
+        self.pipeline.instagram.entries.side_effect = InstagramGalleryError(
+            "incomplete", code="instagram_embed_missing"
+        )
+        with self.assertRaises(MediaError):
+            await self.pipeline.fetch("https://www.instagram.com/reel/example/")
+        self.pipeline.gallery.download.assert_awaited_once()
+        self.pipeline.video.download.assert_not_awaited()
 
     async def test_instagram_reel_can_fall_back_to_gallery(self):
         from core.models import MediaBundle

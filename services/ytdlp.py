@@ -14,6 +14,9 @@ from services.processes import run_process
 
 SAFE_PROTOCOL = "[protocol~='^(https|m3u8_native|http_dash_segments)$']"
 FORMAT = f"bv{SAFE_PROTOCOL}+ba{SAFE_PROTOCOL}/b{SAFE_PROTOCOL}/bv{SAFE_PROTOCOL}"
+INSTAGRAM_FORMAT = (
+    f"b{SAFE_PROTOCOL}[ext=mp4][width>=720][height>=720][vcodec~=?'^(avc1|h264)'][acodec~=?'^(mp4a|aac)']/" + FORMAT
+)
 
 
 def build_command(settings: Settings, link: VideoLink, directory: Path, proxy: str) -> list[str]:
@@ -50,7 +53,7 @@ def build_command(settings: Settings, link: VideoLink, directory: Path, proxy: s
         "--match-filter",
         "!is_live & !is_upcoming",
         "--format",
-        FORMAT,
+        INSTAGRAM_FORMAT if link.platform == "Instagram" else FORMAT,
         "--downloader",
         "native",
         "--merge-output-format",

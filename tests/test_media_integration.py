@@ -63,6 +63,14 @@ class FFmpegIntegrationTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(info.duration, 3, delta=0.15)
         self.assertEqual(info.video_codec, "h264")
 
+    async def test_webp_with_jpeg_extension_is_still_converted_for_telegram(self):
+        source = self.fixture("source.webp", "red")
+        disguised = self.root / "photo.jpg"
+        source.rename(disguised)
+        asset = await self.tools.photo(disguised, self.root)
+        self.assertNotEqual(asset.filename, disguised.name)
+        self.assertEqual((await self.tools.probe(asset.path(self.root))).video_codec, "mjpeg")
+
     async def test_oversized_video_fits_in_one_encode_with_audio_and_full_duration(self):
         source = self.root / "large.mp4"
         subprocess.run(
@@ -333,6 +341,105 @@ class FFmpegIntegrationTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
 
 @unittest.skipUnless(shutil.which("yt-dlp"), "yt-dlp is not installed")
 class ExtractorOptionsTests(DatabaseFixture, unittest.TestCase):
+    def test_instagram_prefers_ready_hd_but_does_not_degrade_to_low_resolution(self):
+        formats = [
+            {
+                "format_id": "video-1080",
+                "url": "https://cdn.example/video.mp4",
+                "protocol": "https",
+                "ext": "mp4",
+                "width": 1080,
+                "height": 1920,
+                "vcodec": "vp9",
+                "acodec": "none",
+            },
+            {
+                "format_id": "audio",
+                "url": "https://cdn.example/audio.m4a",
+                "protocol": "https",
+                "ext": "m4a",
+                "vcodec": "none",
+                "acodec": "mp4a",
+            },
+            {
+                "format_id": "ready-480",
+                "url": "https://cdn.example/low.mp4",
+                "protocol": "https",
+                "ext": "mp4",
+                "width": 480,
+                "height": 854,
+                "vcodec": "h264",
+                "acodec": "aac",
+            },
+        ]
+        metadata = self.root / "ready-quality.json"
+        for addition, expected in (
+            (None, "video-1080+audio"),
+            (
+                {
+                    "format_id": "ready-720",
+                    "url": "https://cdn.example/hd.mp4",
+                    "protocol": "https",
+                    "ext": "mp4",
+                    "width": 720,
+                    "height": 1280,
+                    "vcodec": "h264",
+                    "acodec": "aac",
+                },
+                "ready-720",
+            ),
+            (
+                {
+                    "format_id": "ready-1080",
+                    "url": "https://cdn.example/fullhd.mp4",
+                    "protocol": "https",
+                    "ext": "mp4",
+                    "width": 1080,
+                    "height": 1920,
+                },
+                "ready-1080",
+            ),
+            (
+                {
+                    "format_id": "ready-vp9",
+                    "url": "https://cdn.example/vp9.mp4",
+                    "protocol": "https",
+                    "ext": "mp4",
+                    "width": 1080,
+                    "height": 1920,
+                    "vcodec": "vp9",
+                    "acodec": "aac",
+                },
+                "ready-1080",
+            ),
+        ):
+            if addition:
+                formats.append(addition)
+            metadata.write_text(
+                json.dumps(
+                    {
+                        "id": "fixture",
+                        "title": "Fixture",
+                        "extractor": "test",
+                        "extractor_key": "Test",
+                        "formats": formats,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            command = build_command(
+                self.settings, normalize_url("https://www.instagram.com/reel/example/"), self.root, "http://127.0.0.1:1"
+            )
+            command = command[: command.index("--")] + [
+                "--simulate",
+                "--dump-single-json",
+                "--load-info-json",
+                str(metadata),
+            ]
+            result = subprocess.run(command, capture_output=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+            self.assertEqual(json.loads(result.stdout)["format_id"], expected)
+
     def test_instagram_prefers_fullhd_without_changing_other_sites(self):
         metadata = self.root / "quality.json"
         formats = [
