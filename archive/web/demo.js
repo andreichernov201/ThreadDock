@@ -106,6 +106,7 @@ export function createDemoApi() {
     }],
   }, {
     id: 3,
+    kind: "edited",
     chat_id: 1,
     chat_title: COPY.CREATEDEMOAPI_TITLE,
     body: COPY.CREATEDEMOAPI_PREVIEW,
@@ -122,6 +123,8 @@ export function createDemoApi() {
       diff: [{ kind: "same", text: COPY.CREATEDEMOAPI_VERSIONS_BODY }],
     }, {
       id: 4,
+      edited: true,
+      has_previous: true,
       changed_at: now - 240,
       body: COPY.CREATEDEMOAPI_PREVIEW,
       diff: [{ kind: "same", text: COPY.CREATEDEMOAPI_VERSIONS_DIFF_TEXT }, {
@@ -131,6 +134,7 @@ export function createDemoApi() {
     }],
   }, {
     id: 4,
+    kind: "deleted",
     chat_id: 2,
     chat_title: COPY.CREATEDEMOAPI_TITLE_2,
     body: COPY.CREATEDEMOAPI_BODY_3,
@@ -288,7 +292,8 @@ export function createDemoApi() {
       if (route === "/api/chats") return { items: chats };
       if (route === "/api/events") {
         let items = events.filter((item) =>
-          item.kind !== "new" && (!Number(url.searchParams.get("chat")) ||
+          !["new", "keyword"].includes(item.kind) &&
+          (!Number(url.searchParams.get("chat")) ||
             item.chat_id === Number(url.searchParams.get("chat")))
         );
         const kind = url.searchParams.get("kind");
@@ -300,7 +305,7 @@ export function createDemoApi() {
         const counts = {};
         for (
           const event of events.filter((item) =>
-            item.kind !== "new" &&
+            !["new", "keyword"].includes(item.kind) &&
             (!Number(url.searchParams.get("chat")) ||
               item.chat_id === Number(url.searchParams.get("chat")))
           )

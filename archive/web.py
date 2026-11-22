@@ -2,6 +2,7 @@
 
 import asyncio
 import hmac
+import logging
 import time
 import uuid
 from pathlib import Path
@@ -10,7 +11,6 @@ from aiohttp import web
 
 from archive.analytics import statistics_for
 from archive.auth import AuthenticationError, hash_pin, new_token, token_hash, validate_init_data, verify_pin
-from archive.content import clean_filename
 from archive.exports import FORMATS
 from core import texts as T
 from core.errors import MediaError
@@ -18,6 +18,7 @@ from services.processes import remove_directory
 
 ASSETS = Path(__file__).parent / "web"
 OPEN_WHEN_LOCKED = {"/api/session", "/api/unlock", "/api/unlock-biometric", "/api/lock", "/api/logout"}
+logger = logging.getLogger(__name__)
 
 
 def number(request, key, default=0, maximum=10**16):
@@ -46,6 +47,7 @@ def create_web_app(service) -> web.Application:
 
     @web.middleware
     async def boundary(request, handler):
+        operation = uuid.uuid4().hex
         try:
             origin = request.headers.get("Origin")
             if request.path.startswith("/api/") and origin:
@@ -92,6 +94,7 @@ def create_web_app(service) -> web.Application:
                     "error": {
                         401: T.ARCHIVE_WEB_REOPEN_TELEGRAM,
                         403: T.ARCHIVE_WEB_FORBIDDEN,
+                        405: T.ARCHIVE_WEB_REQUEST_FAILED,
                         429: T.ARCHIVE_WEB_TOO_MANY_ATTEMPTS,
                     }.get(error.status, T.ARCHIVE_WEB_REQUEST_FAILED),
                     "code": str(error.status),
@@ -99,11 +102,24 @@ def create_web_app(service) -> web.Application:
                 status=error.status,
             )
         except Exception as error:
-            repository.record_error(type(error).__name__)
-            response = web.json_response({"error": T.ARCHIVE_WEB_INTERNAL_ERROR, "code": "internal"}, status=500)
+            resource = request.match_info.route.resource
+            route = resource.canonical if resource else "unmatched"
+            code = type(error).__name__
+            logger.exception(
+                "archive_http operation=%s method=%s route=%s code=%s", operation, request.method, route, code
+            )
+            try:
+                repository.record_error(f"http:{code}")
+            except Exception:
+                logger.error("archive_http operation=%s state=diagnostic_write_failed", operation)
+            response = web.json_response(
+                {"error": T.ARCHIVE_WEB_INTERNAL_ERROR, "code": "internal", "operation_id": operation},
+                status=500,
+            )
         response.headers.update(
             {
                 "Cache-Control": "no-store",
+                "X-Operation-Id": operation,
                 "X-Content-Type-Options": "nosniff",
                 "Referrer-Policy": "no-referrer",
                 "Content-Security-Policy": "default-src 'self'; script-src 'self' https://telegram.org; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'self' https://web.telegram.org https://*.telegram.org",
@@ -174,6 +190,7 @@ def create_web_app(service) -> web.Application:
                 connections=repository.connections(owner["owner_id"]),
                 bot_username=getattr(service, "bot_username", ""),
                 operator=owner["owner_id"] in config.operators,
+                deletion=repository.deletion_status(owner["owner_id"]),
             )
         return web.json_response(result)
 
@@ -346,23 +363,20 @@ def create_web_app(service) -> web.Application:
 
     @routes.get("/api/messages/{id:[0-9]+}")
     async def message(request):
-        result = repository.message(request["owner"]["owner_id"], int(request.match_info["id"]))
-        if (
-            result is None
-            or not repository.db.execute(
-                "SELECT 1 FROM archive_events WHERE owner_id=? AND message_id=? AND kind!='new' LIMIT 1",
-                (request["owner"]["owner_id"], int(request.match_info["id"])),
-            ).fetchone()
-        ):
+        owner, identifier = request["owner"]["owner_id"], int(request.match_info["id"])
+        if not repository.retained(owner, identifier):
             raise LookupError()
-        return web.json_response(result)
+        return web.json_response(repository.message(owner, identifier))
 
     @routes.post("/api/messages/{id:[0-9]+}/favorite")
     async def favorite(request):
         body = await body_json(request)
         if type(body.get("value")) is not bool:
             raise ValueError(T.ARCHIVE_WEB_BOOLEAN_REQUIRED)
-        repository.favorite(request["owner"]["owner_id"], int(request.match_info["id"]), body["value"])
+        owner, identifier = request["owner"]["owner_id"], int(request.match_info["id"])
+        if not repository.retained(owner, identifier):
+            raise LookupError()
+        repository.favorite(owner, identifier, body["value"])
         return web.json_response({"ok": True})
 
     @routes.post("/api/messages/{id:[0-9]+}/delete")
@@ -374,9 +388,7 @@ def create_web_app(service) -> web.Application:
         async with service.owner_lock(owner):
             repository.purge_message(owner, int(request.match_info["id"]))
             service.cleanup_owner_blobs(owner)
-        return web.json_response(
-            {"ok": True, "vault_copies_require_manual_deletion": bool(request["owner"]["vault_chat_id"])}
-        )
+        return web.json_response({"ok": True, **repository.deletion_status(owner)})
 
     @routes.patch("/api/chats/{id:[0-9]+}")
     async def chat_settings(request):
@@ -407,9 +419,7 @@ def create_web_app(service) -> web.Application:
                 exclude=bool(body.get("exclude")),
             )
             service.cleanup_owner_blobs(owner)
-        return web.json_response(
-            {"ok": True, "vault_copies_require_manual_deletion": bool(request["owner"]["vault_chat_id"])}
-        )
+        return web.json_response({"ok": True, **repository.deletion_status(owner)})
 
     @routes.get("/api/gallery")
     async def gallery(request):
@@ -466,7 +476,9 @@ def create_web_app(service) -> web.Application:
             raise LookupError()
         if media["protected"]:
             raise ValueError(T.ARCHIVE_WEB_PROTECTED_MEDIA)
-        job = repository.enqueue(owner, "send_media", {"media_id": identifier})
+        job = repository.request_media(owner, identifier, retry=False)
+        if not job:
+            raise web.HTTPTooManyRequests(headers={"Retry-After": "60"})
         return web.json_response({"task_id": job}, status=202)
 
     @routes.post("/api/media/{id:[a-f0-9]{32}}/retry")
@@ -475,11 +487,10 @@ def create_web_app(service) -> web.Application:
         media = repository.media(owner, identifier)
         if media is None:
             raise LookupError()
-        if media["status"] == "protected":
-            raise ValueError(T.ARCHIVE_WEB_PROTECTED_MEDIA)
-        return web.json_response(
-            {"task_id": repository.enqueue(owner, "media", {"media_id": identifier, "explicit": True})}, status=202
-        )
+        job = repository.request_media(owner, identifier, retry=True)
+        if not job:
+            raise web.HTTPTooManyRequests(headers={"Retry-After": "60"})
+        return web.json_response({"task_id": job}, status=202)
 
     @routes.get("/api/stats")
     async def stats(request):
@@ -511,62 +522,6 @@ def create_web_app(service) -> web.Application:
             {"task_id": repository.enqueue(owner, "export", {"format": format_name, "chat_id": chat_id})}, status=202
         )
 
-    @routes.post("/api/chats/{id:[0-9]+}/reply")
-    async def reply(request):
-        owner, chat_id = request["owner"]["owner_id"], int(request.match_info["id"])
-        chat = repository.chat(owner, chat_id)
-        if chat is None:
-            raise LookupError()
-        if not service.database.business_can_send(chat["connection_id"], chat["telegram_id"]):
-            raise ValueError(T.ARCHIVE_WEB_REPLY_WINDOW_CLOSED)
-        payload = {"chat_id": chat_id}
-        upload = None
-        try:
-            if request.content_type == "multipart/form-data":
-                multipart = await request.multipart()
-                async for part in multipart:
-                    if part.name == "file" and part.filename:
-                        if upload:
-                            raise ValueError(T.ARCHIVE_WEB_SINGLE_ATTACHMENT)
-                        folder = service.uploads / str(owner)
-                        folder.mkdir(parents=True, exist_ok=True)
-                        upload = folder / uuid.uuid4().hex
-                        count = 0
-                        with upload.open("wb") as file:
-                            while chunk := await part.read_chunk():
-                                count += len(chunk)
-                                if count > service.settings.max_upload_bytes:
-                                    raise ValueError(T.ARCHIVE_WEB_FILE_TOO_LARGE)
-                                file.write(chunk)
-                        payload.update(
-                            upload=upload.relative_to(service.root).as_posix(),
-                            filename=clean_filename(part.filename, "attachment"),
-                        )
-                    elif part.name in {"text", "reply_to"}:
-                        value = await part.text()
-                        if len(value) > 4096:
-                            raise ValueError(T.ARCHIVE_WEB_REPLY_TOO_LONG)
-                        payload[part.name] = int(value) if part.name == "reply_to" and value else value
-            else:
-                body = await body_json(request)
-                payload.update(text=body.get("text", ""), reply_to=body.get("reply_to"))
-            if not isinstance(payload.get("text", ""), str) or len(payload.get("text", "")) > (
-                1024 if upload else 4096
-            ):
-                raise ValueError(T.ARCHIVE_WEB_REPLY_LENGTH_LIMIT)
-            if not payload.get("text", "").strip() and not upload:
-                raise ValueError(T.ARCHIVE_WEB_REPLY_REQUIRED)
-            if payload.get("reply_to"):
-                target = repository.message(owner, payload["reply_to"])
-                if not target or target["chat_id"] != chat_id:
-                    raise LookupError()
-            task = repository.enqueue(owner, "reply", payload)
-            upload = None
-            return web.json_response({"task_id": task}, status=202)
-        finally:
-            if upload:
-                upload.unlink(missing_ok=True)
-
     @routes.get("/api/tasks/{id:[0-9]+}")
     async def task(request):
         row = repository.task(request["owner"]["owner_id"], int(request.match_info["id"]))
@@ -597,17 +552,19 @@ def create_web_app(service) -> web.Application:
         owner = request["owner"]["owner_id"]
         repository.update_owner(owner, {"enabled": False})
         async with service.owner_lock(owner):
-            vault_remains = repository.purge_owner(owner)
-            for root in (service.blobs, service.exports, service.uploads):
+            repository.purge_owner(owner)
+            service.cleanup_owner_blobs(owner)
+            for root in (service.exports, service.uploads):
                 path = root / str(owner)
                 if path.exists():
                     remove_directory(path, root)
-        return web.json_response({"ok": True, "vault_copies_require_manual_deletion": vault_remains})
+        return web.json_response({"ok": True, **repository.deletion_status(owner)})
 
     @routes.get("/api/operator")
     async def operator(request):
         if request["owner"]["owner_id"] not in config.operators:
             raise web.HTTPForbidden()
+        now = time.time()
         return web.json_response(
             {
                 "owners": repository.db.execute("SELECT count(*) FROM archive_owners").fetchone()[0],
@@ -615,7 +572,23 @@ def create_web_app(service) -> web.Application:
                 "tasks": [
                     dict(row)
                     for row in repository.db.execute(
-                        "SELECT status,count(*) AS count FROM archive_tasks GROUP BY status"
+                        """SELECT kind,status,count(*) AS count,max(attempts) AS max_attempts,
+                        max(0,cast(?-min(created_at) AS INTEGER)) AS oldest_seconds
+                        FROM archive_tasks GROUP BY kind,status ORDER BY kind,status""",
+                        (now,),
+                    )
+                ],
+                "media": [
+                    dict(row)
+                    for row in repository.db.execute(
+                        """SELECT status,count(*) AS count,sum(CASE WHEN local_path IS NULL THEN 0 ELSE size END) AS bytes
+                        FROM archive_media GROUP BY status"""
+                    )
+                ],
+                "vault_cleanup": [
+                    dict(row)
+                    for row in repository.db.execute(
+                        "SELECT state,count(*) AS count FROM archive_vault_copies WHERE state!='live' GROUP BY state"
                     )
                 ],
                 "errors": [

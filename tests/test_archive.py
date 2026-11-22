@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import hmac
 import json
@@ -6,13 +7,16 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from urllib.parse import urlencode
+from zipfile import ZipFile
 
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.methods import SendMessage
+from aiogram.types import Message
 from aiohttp.test_utils import make_mocked_request
 
 from archive.auth import AuthenticationError, hash_pin, validate_init_data, verify_pin
 from archive.config import ArchiveSettings
+from archive.content import message_payload
 from archive.exports import safe_csv, write_export
 from archive.repository import ArchiveRepository
 from archive.service import ArchiveService, LimitedWriter, quiet_delay
@@ -60,7 +64,13 @@ class ArchiveFixture(DatabaseFixture):
             outgoing=False,
             sender_id=30,
             media_group=None,
-            payload={"body": body, "media": media or [], "protected": kwargs.pop("protected", False), "reply_to": None},
+            payload={
+                "body": body,
+                "media": media or [],
+                "protected": kwargs.pop("protected", False),
+                "reply_to": kwargs.pop("reply_to", None),
+                "ephemeral": kwargs.pop("ephemeral", False),
+            },
             **kwargs,
         )
 
@@ -106,10 +116,79 @@ class ArchivePolicyTests(ArchiveFixture, unittest.TestCase):
         self.assertEqual([item["body"] for item in events], ["Third", "Second"])
         self.assertEqual({item["kind"] for item in events}, {"edited"})
 
-    def test_reply_media_capture_has_an_event(self):
-        self.ingest(media=[self.photo()], captured_from_reply=True, protected=True)
+    def test_protected_reply_has_its_own_event(self):
+        identifier = self.ingest(media=[self.photo()], captured_from_reply=True, protected=True)
         events = self.repo.events(10)["items"]
-        self.assertEqual([item["kind"] for item in events], ["reply_media"])
+        self.assertEqual([item["kind"] for item in events], ["protected_media"])
+        self.assertTrue(events[0]["payload"]["from_reply"])
+        self.assertEqual(self.repo.message(10, identifier)["kind"], "protected_media")
+
+    def test_same_text_in_a_nested_reply_does_not_create_an_edit(self):
+        at = int(time.time()) - 100
+        identifier = self.ingest(at=at, body="Обычный ответ", reply_to=123)
+        self.ingest(at=at, body="Обычный ответ", captured_from_reply=True)
+        self.ingest(at=at, changed=at + 8, body="Обычный ответ", edited_update=True)
+        self.assertEqual(self.repo.events(10)["items"], [])
+        self.assertEqual(self.repo.message(10, identifier)["reply_to"], 123)
+
+    def test_legacy_repair_keeps_original_and_real_edit(self):
+        at = int(time.time()) - 100
+        identifier = self.ingest(at=at, body="Обычный ответ", reply_to=123)
+        message = self.repo.message(10, identifier)
+        with self.repo.db:
+            self.repo.db.execute("DELETE FROM state WHERE key='archive_visible_edits_v1'")
+            self.repo._save_version(
+                10,
+                message["chat_id"],
+                identifier,
+                at,
+                message["body"],
+                json.dumps({"body": message["body"], "media": [], "reply_to": None}),
+                "legacy",
+                True,
+            )
+        self.ingest(at=at, changed=at + 2, body="Настоящая правка")
+        self.assertEqual(self.repo.repair_legacy_edits(), 1)
+        self.assertEqual(self.repo.repair_legacy_edits(), 0)
+        changes = [v for v in self.repo.message(10, identifier)["versions"] if v["edited"]]
+        self.assertEqual([v["body"] for v in changes], ["Настоящая правка"])
+        self.assertEqual([e["body"] for e in self.repo.events(10)["items"]], ["Настоящая правка"])
+
+    def test_late_original_and_same_second_edits_keep_real_history(self):
+        at = int(time.time()) - 100
+        identifier = self.ingest(at=at, body="Стало", edited_update=True, update_id=2)
+        self.ingest(at=at, body="Было", edited_update=False, update_id=1)
+        self.ingest(at=at, body="Было", edited_update=True, update_id=3)
+        self.ingest(at=at, body="Стало", edited_update=True, update_id=2)
+        message = self.repo.message(10, identifier)
+        self.assertEqual(
+            [(v["body"], v["edited"]) for v in message["versions"]],
+            [
+                ("Было", False),
+                ("Стало", True),
+                ("Было", True),
+            ],
+        )
+        self.assertEqual(message["body"], "Было")
+
+    def test_late_original_can_disprove_a_first_seen_edit(self):
+        at = int(time.time()) - 100
+        identifier = self.ingest(at=at, changed=at + 1, body="Same text")
+        self.ingest(at=at, body="Same text")
+        self.assertEqual(self.repo.events(10)["items"], [])
+        self.assertIsNone(self.repo.message(10, identifier)["edited_at"])
+
+    def test_late_snapshot_recovers_deletion_and_chat_preview(self):
+        self.repo.delete_messages(10, "connection-10", 30, [1], "Test chat", "test")
+        self.ingest(telegram_id=1, body="Удалённое", media=[self.photo()])
+        self.ingest(telegram_id=2, body="Снимок без события")
+        self.assertEqual(
+            [(e["kind"], e["body"]) for e in self.repo.events(10)["items"]],
+            [
+                ("deleted", "Удалённое"),
+            ],
+        )
+        self.assertEqual(self.repo.chats(10)[0]["preview"], "Удалённое")
 
     def test_archive_search_respects_event_scope_and_filter(self):
         self.ingest(body="ordinary word")
@@ -262,6 +341,16 @@ class RepositoryTests(ArchiveFixture, unittest.TestCase):
         self.assertEqual(message["body"], "Latest")
         self.assertEqual(len(message["versions"]), 2)
 
+    def test_standard_queue_prefers_an_idle_owner_and_urgent_has_its_own_lane(self):
+        for _ in range(50):
+            self.repo.enqueue(10, "export", {})
+        other = self.repo.enqueue(20, "export", {})
+        self.repo.claim(lane="standard")
+        self.assertEqual(self.repo.claim(lane="standard", busy_owners={10})["id"], other)
+        self.ingest(media=[self.photo()], ephemeral=True)
+        urgent = self.repo.claim(lane="urgent")
+        self.assertEqual((urgent["owner_id"], urgent["kind"]), (10, "media"))
+
     def test_rotated_file_id_does_not_create_edit(self):
         at = time.time() - 100
         identifier = self.ingest(at=at, media=[self.photo()])
@@ -334,6 +423,24 @@ class RepositoryTests(ArchiveFixture, unittest.TestCase):
 
 
 class WebTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_keyword_only_record_has_no_detail_search_result_or_preview(self):
+        self.repo.update_owner(10, {"keywords": ["keyword"]})
+        identifier = self.ingest(body="keyword ordinary snapshot")
+        self.assertEqual((await self.request("GET", f"/api/messages/{identifier}")).status, 404)
+        for route in ("/api/events", "/api/search?q=keyword", "/api/chats"):
+            response = await self.request("GET", route)
+            self.assertNotIn("ordinary snapshot", response.text)
+
+    async def test_multiple_clicks_reuse_archive_media_tasks(self):
+        identifier = self.ingest(media=[self.photo()], archived=True)
+        media = self.repo.message(10, identifier)["media"][0]["id"]
+        for action in ("retry", "send"):
+            results = await asyncio.gather(
+                *[self.request("POST", f"/api/media/{media}/{action}", {}) for _ in range(10)]
+            )
+            self.assertEqual({response.status for response in results}, {202})
+            self.assertEqual(len({json.loads(response.body)["task_id"] for response in results}), 1)
+
     async def test_owner_cannot_read_or_mutate_foreign_resources(self):
         own = self.ingest(body="OWN", archived=True)
         foreign = self.ingest(owner=20, body="FOREIGNSECRET", media=[self.photo()], archived=True)
@@ -460,6 +567,110 @@ class WebTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
 
 
 class ServiceTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_direct_view_once_media_is_claimable_without_reply_or_marking_read(self):
+        self.database.save_connection("connection-10", 10, True, True)
+        raw = {
+            "message_id": 5,
+            "business_connection_id": "connection-10",
+            "date": int(time.time()),
+            "chat": {"id": 30, "type": "private", "first_name": "Test"},
+            "from": {"id": 30, "first_name": "Test", "is_bot": False},
+            "photo": [{"file_id": "file", "file_unique_id": "unique", "width": 5, "height": 5, "is_view_once": True}],
+        }
+        message = Message.model_validate(raw)
+        self.assertTrue(message_payload(message)["ephemeral"])
+        await self.service.capture(message, update_id=1)
+        event = self.repo.events(10)["items"][0]
+        self.assertEqual(event["kind"], "reply_media")
+        self.assertFalse(event["payload"]["from_reply"])
+        task = self.repo.claim(lane="urgent")
+        self.bot.download.side_effect = lambda *_, destination, **__: destination.write(b"test")
+        await self.service._process(task)
+        self.assertEqual(self.repo.gallery(10)["items"][0]["status"], "ready")
+        self.assertFalse(self.repo.db.execute("SELECT 1 FROM archive_tasks WHERE kind='read'").fetchone())
+
+    async def test_prefetched_file_survives_delete_and_appears_in_zip_manifest(self):
+        identifier = self.ingest(media=[self.photo("before-delete")])
+        task = self.repo.claim()
+        self.assertEqual(task["kind"], "prefetch")
+        self.bot.download.side_effect = lambda *_, destination, **__: destination.write(b"jpeg")
+        await self.service._process(task)
+        self.assertEqual(self.repo.gallery(10)["items"], [])
+        self.repo.delete_messages(10, "connection-10", 30, [1], "Test chat")
+        await self.service._process(self.repo.claim())
+        self.bot.download.assert_awaited_once()
+        self.ingest(telegram_id=2, media=[self.photo("unavailable")], archived=True)
+        self.ingest(owner=20, telegram_id=3, body="other owner", media=[self.photo("foreign")], archived=True)
+        self.ingest(telegram_id=4, body="ordinary snapshot")
+        exports = []
+
+        async def send_document(owner, document, **kwargs):
+            self.assertEqual(owner, 10)
+            with ZipFile(document.path) as bundle:
+                items = json.loads(bundle.read("manifest.json"))
+                records = [name for name in bundle.namelist() if name.startswith("records/")]
+                for record in records:
+                    self.assertNotIn(b"ordinary snapshot", bundle.read(record))
+                    self.assertNotIn(b"other owner", bundle.read(record))
+                for item in items:
+                    if entry := item.get("entry"):
+                        self.assertEqual(bundle.read(entry), b"jpeg")
+                    exports.append(item)
+
+        self.bot.send_document = AsyncMock(side_effect=send_document)
+        task = self.repo.enqueue(10, "export", {})
+        await self.service._export({"id": task, "payload": {}}, self.repo.owner(10))
+        self.assertEqual({(item["message_id"], item["status"]) for item in exports}, {(1, "included"), (2, "pending")})
+        self.assertEqual(self.repo.message(10, identifier)["media"][0]["status"], "ready")
+
+    async def test_optout_queues_known_vault_copy_for_removal(self):
+        identifier = self.ingest(media=[self.photo()], archived=True)
+        media = self.repo.message(10, identifier)["media"][0]
+        with self.repo.db:
+            self.repo.db.execute(
+                "INSERT INTO archive_vault_copies(owner_id,media_id,chat_id,telegram_id) VALUES (?,?,?,?)",
+                (10, media["id"], -100, 23),
+            )
+        self.repo.set_author_optout(30, True)
+        self.assertEqual(self.repo.deletion_status(10)["vault_pending"], 1)
+
+        async def delete(*args):
+            self.service.stopping.set()
+            return True
+
+        self.bot.delete_message = AsyncMock(side_effect=delete)
+        await self.service._vault_cleanup()
+        self.bot.delete_message.assert_awaited_once_with(-100, 23)
+        self.assertEqual(self.repo.deletion_status(10)["vault_pending"], 0)
+
+    async def test_slow_transfer_does_not_block_other_owner_or_urgent_media(self):
+        self.ingest(media=[self.photo("slow")])
+        started, release, urgent, other = (asyncio.Event() for _ in range(4))
+
+        async def download(file_id, *, destination, **kwargs):
+            if file_id == "slow":
+                started.set()
+                await release.wait()
+            else:
+                urgent.set()
+            destination.write(b"file")
+
+        async def notify(*args, **kwargs):
+            self.assertEqual(args[0], 20)
+            other.set()
+
+        self.bot.download.side_effect = download
+        self.bot.send_message.side_effect = notify
+        self.service.start()
+        try:
+            await asyncio.wait_for(started.wait(), 3)
+            self.ingest(telegram_id=2, media=[self.photo("urgent")], ephemeral=True)
+            self.ingest(owner=20, archived=True)
+            await asyncio.wait_for(asyncio.gather(urgent.wait(), other.wait()), 3)
+        finally:
+            release.set()
+            await self.service.close()
+
     async def test_exports_escape_html_csv_and_isolate_owners(self):
         self.ingest(body="=SUM(1,2)<script>alert(1)</script>", archived=True)
         self.ingest(owner=20, body="FOREIGN")
@@ -504,7 +715,7 @@ class ServiceTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
             destination.write(b"file")
 
         self.bot.download.side_effect = download
-        await self.service._save_media({"payload": {"media_id": media}}, self.repo.owner(10))
+        await self.service._save_media({"kind": "media", "payload": {"media_id": media}}, self.repo.owner(10))
         self.bot.download.assert_awaited_once()
         self.assertEqual(self.repo.media(10, media)["status"], "ready")
 
@@ -512,24 +723,22 @@ class ServiceTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
         identifier = self.ingest(media=[self.photo()], protected=True)
         media = self.repo.message(10, identifier)["media"][0]["id"]
         self.bot.download.side_effect = TelegramBadRequest(method=SendMessage(chat_id=10, text=""), message="protected")
-        await self.service._save_media({"payload": {"media_id": media}}, self.repo.owner(10))
+        await self.service._save_media({"kind": "media", "payload": {"media_id": media}}, self.repo.owner(10))
         self.assertEqual(self.repo.media(10, media)["status"], "protected")
 
-    async def test_keyword_notice_explains_match_and_links_to_record(self):
+    async def test_keyword_notice_explains_match_without_archive_link(self):
         from dataclasses import replace
 
         self.service.config = replace(self.service.config, public_url="https://archive.example.org")
         self.repo.update_owner(10, {"keywords": ["meeting"]})
-        message_id = self.ingest(body="meeting at six")
+        self.ingest(body="meeting at six")
         task = self.repo.claim()
         self.assertEqual(task["kind"], "notify")
         await self.service._notify(task, self.repo.owner(10))
         call = self.bot.send_message.call_args
         self.assertIn("meeting", call.args[1])
         self.assertNotIn("meeting at six", call.args[1])  # hide_content remains enforced
-        buttons = call.kwargs["reply_markup"].inline_keyboard
-        self.assertEqual(len(buttons), 1)
-        self.assertIn(f"message={message_id}", buttons[0][0].web_app.url)
+        self.assertIsNone(call.kwargs["reply_markup"])
 
     async def test_download_is_bounded_and_saved_without_public_url(self):
         identifier = self.ingest(media=[self.photo()], archived=True)
@@ -539,7 +748,7 @@ class ServiceTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
             destination.write(b"jpeg")
 
         self.bot.download.side_effect = download
-        await self.service._save_media({"payload": {"media_id": media}}, self.repo.owner(10))
+        await self.service._save_media({"kind": "media", "payload": {"media_id": media}}, self.repo.owner(10))
         row = self.repo.media(10, media)
         self.assertEqual(row["status"], "ready")
         self.assertEqual(self.service.safe_path(row["local_path"]).read_bytes(), b"jpeg")
@@ -548,7 +757,7 @@ class ServiceTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
     async def test_staged_file_cannot_be_downloaded_by_a_stale_task(self):
         identifier = self.ingest(media=[self.photo()])
         media_id = self.repo.db.execute("SELECT id FROM archive_media WHERE message_id=?", (identifier,)).fetchone()[0]
-        await self.service._save_media({"payload": {"media_id": media_id}}, self.repo.owner(10))
+        await self.service._save_media({"kind": "media", "payload": {"media_id": media_id}}, self.repo.owner(10))
         self.bot.download.assert_not_awaited()
 
     async def test_export_contains_no_ordinary_message_snapshots(self):
@@ -560,7 +769,7 @@ class ServiceTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
         identifier = self.ingest(media=[self.photo()], archived=True)
         media = self.repo.message(10, identifier)["media"][0]["id"]
         with patch("archive.service.shutil.disk_usage", return_value=SimpleNamespace(free=0)):
-            await self.service._save_media({"payload": {"media_id": media}}, self.repo.owner(10))
+            await self.service._save_media({"kind": "media", "payload": {"media_id": media}}, self.repo.owner(10))
         self.bot.download.assert_not_awaited()
         self.assertEqual(self.repo.media(10, media)["status"], "storage_full")
 
@@ -588,6 +797,18 @@ class ServiceTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
 
 
 class ArchiveNoticeTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_notice_shows_edit_near_end_of_long_message(self):
+        self.repo.update_owner(10, {"hide_content": False})
+        at = time.time() - 100
+        prefix = "long " * 200
+        self.ingest(body=prefix + "old", at=at)
+        self.ingest(body=prefix + "<new>", at=at, changed=at + 1)
+        await self.service._process(self.repo.claim())
+        notice = self.bot.send_message.call_args.args[1]
+        self.assertIn("old</blockquote>", notice)
+        self.assertIn("&lt;new&gt;</blockquote>", notice)
+        self.assertLess(len(notice), 1000)
+
     async def test_notice_uses_the_event_snapshot_not_the_latest_edit(self):
         self.repo.update_owner(10, {"hide_content": False})
         at = time.time() - 100
@@ -597,6 +818,9 @@ class ArchiveNoticeTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
         task = self.repo.claim()
         await self.service._process(task)
         notice = self.bot.send_message.call_args.args[1]
+        self.assertIn("<b>Было</b>", notice)
+        self.assertIn("original", notice)
+        self.assertIn("<b>Стало</b>", notice)
         self.assertIn("first edit", notice)
         self.assertNotIn("later edit", notice)
         self.assertIsNone(self.bot.send_message.call_args.kwargs["reply_markup"])

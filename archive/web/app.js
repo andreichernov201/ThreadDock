@@ -147,7 +147,10 @@ class Client {
         clearPrivate();
         showLogin();
       }
-      throw new Error(data.error || "Request failed");
+      const detail = data.operation_id
+        ? " · " + fill(t(COPY.OPERATION_ID), data.operation_id)
+        : "";
+      throw new Error((data.error || "Request failed") + detail);
     }
     return data;
   }
@@ -383,8 +386,8 @@ function filterBar() {
     ["deleted", COPY.DELETIONS],
     ["edited", COPY.EDITS],
     ["reply_media", COPY.DISAPPEARING],
+    ["protected_media", COPY.PROTECTED_ATTACHMENTS],
     ["favorites", COPY.FAVORITES],
-    ["keyword", COPY.KEYWORDS],
   ];
   return `<div class="filters">${
     labels.map(([key, label]) =>
@@ -461,18 +464,18 @@ function eventFeed() {
       edited: COPY.MESSAGE_EDITED,
       deleted: COPY.MESSAGE_DELETED,
       unknown_deleted: COPY.MESSAGE_DELETED,
-      keyword: COPY.KEYWORD_MATCH,
       profile: COPY.PROFILE_CHANGED,
       reply_media: COPY.REPLY_MEDIA,
+      protected_media: COPY.PROTECTED_ATTACHMENT,
       search: COPY.SEARCH_RESULTS,
     }[kind] || COPY.SERVICE_MESSAGE;
     const glyph = {
       edited: "edit",
       deleted: "trash",
       unknown_deleted: "trash",
-      keyword: "key",
       profile: "settings",
       reply_media: "file",
+      protected_media: "file",
     }[kind] || "chats";
     const name = item.chat_title || S.chats.find((c) =>
       c.id === item.chat_id
@@ -816,6 +819,7 @@ function toggle(name, label, note = "") {
 function renderSettings() {
   const o = S.owner;
   const connected = S.meta.connections.some((item) => item.enabled);
+  const deletion = S.meta.deletion;
   shell(
     `<section class="panel trigger-help"><h2>${
       e(t(COPY.TRIGGERS_HELP))
@@ -912,7 +916,17 @@ function renderSettings() {
       e(t(COPY.YOUR_DATA)),
       e(t(COPY.EXPORT)),
       e(t(COPY.DELETE_ALL_ARCHIVE_DATA)),
-      S.meta.operator ? COPY.OPERATOR_CARD : "",
+      (deletion?.vault_pending || deletion?.vault_manual
+        ? `<section class="panel setting-card"><h2>${
+          e(t(COPY.OPERATOR_CLEANUP))
+        }</h2><p>${
+          e(fill(
+            t(COPY.VAULT_DELETION_STATUS),
+            fmt(deletion.vault_pending),
+            fmt(deletion.vault_manual),
+          ))
+        }</p></section>`
+        : "") + (S.meta.operator ? COPY.OPERATOR_CARD : ""),
     ),
   );
 }
@@ -933,6 +947,8 @@ async function load(append = false) {
   try {
     let path;
     if (S.view === "settings") {
+      const session = await api.request("/api/session");
+      S.meta.deletion = session.deletion;
       render();
       return;
     }
@@ -1000,22 +1016,24 @@ function openModal(title, body, actions = "") {
 async function openMessage(id) {
   const message = await api.request(`/api/messages/${id}`);
   S.openMessage = message;
-  const kind = message.deleted_at
-    ? "deleted"
-    : message.edited_at
-    ? "edited"
-    : "reply_media";
-  const label = kind === "deleted"
-    ? COPY.MESSAGE_DELETED
-    : kind === "edited"
-    ? COPY.MESSAGE_EDITED
-    : COPY.REPLY_MEDIA;
-  const changes = (message.versions || []).slice(1);
+  const kind = message.kind;
+  const label = {
+    deleted: COPY.MESSAGE_DELETED,
+    unknown_deleted: COPY.MESSAGE_DELETED,
+    edited: COPY.MESSAGE_EDITED,
+    reply_media: COPY.REPLY_MEDIA,
+    protected_media: COPY.PROTECTED_ATTACHMENT,
+  }[kind] || COPY.SERVICE_MESSAGE;
+  const changes = (message.versions || []).filter((version) => version.edited);
   const history = changes.map((version, index) =>
     `<section class="version"><small>${e(t(COPY.VERSION_PREFIX))}${
       index + 1
-    } · ${time(version.changed_at, true)}</small><pre>${
-      version.diff?.length
+    } · ${time(version.changed_at, true)}</small>${
+      version.has_previous
+        ? ""
+        : `<p class="muted">${e(t(COPY.PREVIOUS_UNAVAILABLE))}</p>`
+    }<pre>${
+      version.has_previous && version.diff?.length
         ? version.diff.map((part) => {
           const tag = part.kind === "added"
             ? "ins"
@@ -1025,7 +1043,11 @@ async function openMessage(id) {
           return `<${tag}>${e(part.text)}</${tag}>`;
         }).join("")
         : e(version.body)
-    }</pre></section>`
+    }</pre>${
+      version.attachments?.length
+        ? `<small>${e(version.attachments.join(", "))}</small>`
+        : ""
+    }</section>`
   ).join("");
   const attachments = (message.media || []).map((media) =>
     `<button class="media-attachment" data-action="media" data-id="${media.id}">${
@@ -1060,7 +1082,10 @@ async function openMessage(id) {
       time(message.sent_at, true)
     }</p></div></div>
   <span class="record-state ${kind}">${
-      icon(kind === "deleted" ? "trash" : "edit")
+      icon(
+        { deleted: "trash", unknown_deleted: "trash", edited: "edit" }[kind] ||
+          "file",
+      )
     }${e(t(label))}</span>
   <div class="record-content">${
       message.body
@@ -1258,10 +1283,11 @@ async function trackTask(id) {
     }
   }
 }
-async function queue(path, body = {}) {
+async function queue(path, body = {}, wait = false) {
   const result = await api.request(path, { method: "POST", body });
   toast(COPY.ADDED_TO_THE_QUEUE);
-  trackTask(result.task_id);
+  if (wait) await trackTask(result.task_id);
+  else trackTask(result.task_id);
   return result;
 }
 function fail(error) {
@@ -1380,9 +1406,19 @@ document.addEventListener("click", async (event) => {
       deleteModal(false, Number(button.dataset.id));
     } else if (action === "media") await previewMedia(button.dataset.id);
     else if (action === "send-media") {
-      await queue(`/api/media/${button.dataset.id}/send`);
+      button.disabled = true;
+      try {
+        await queue(`/api/media/${button.dataset.id}/send`, {}, true);
+      } finally {
+        button.disabled = false;
+      }
     } else if (action === "retry-media") {
-      await queue(`/api/media/${button.dataset.id}/retry`);
+      button.disabled = true;
+      try {
+        await queue(`/api/media/${button.dataset.id}/retry`, {}, true);
+      } finally {
+        button.disabled = false;
+      }
     } else if (action === "vault-request") {
       await queue("/api/vault/request");
       if (S.meta.bot_username) {
@@ -1413,16 +1449,47 @@ document.addEventListener("click", async (event) => {
       document.querySelector("#stats-end").value = end;
     } else if (action === "operator") {
       const data = await api.request("/api/operator");
+      const rows = (items, fields) =>
+        items.map((row) =>
+          `<tr>${
+            fields.map((key) => `<td>${e(String(row[key] ?? ""))}</td>`).join(
+              "",
+            )
+          }</tr>`
+        ).join("");
+      const table = (title, headings, body) =>
+        `<h3>${e(t(title))}</h3><table class="data-table"><thead><tr>${
+          headings.map((label) => `<th>${e(t(label))}</th>`).join("")
+        }</tr></thead><tbody>${body}</tbody></table>`;
       openModal(
         COPY.OPERATOR,
         fill(
           COPY.TEXT_TEMPLATE,
           fmt(data.owners),
           fmt(data.messages),
-          data.errors.map((row) =>
-            `<tr><td>${e(row.code)}</td><td>${fmt(row.count)}</td></tr>`
-          ).join(""),
-        ),
+          rows(data.errors, ["code", "count"]),
+        ) +
+          table(
+            COPY.OPERATOR_QUEUE,
+            COPY.OPERATOR_TASK_HEADERS,
+            rows(data.tasks, [
+              "kind",
+              "status",
+              "count",
+              "max_attempts",
+              "oldest_seconds",
+            ]),
+          ) +
+          table(
+            COPY.OPERATOR_FILES,
+            COPY.OPERATOR_MEDIA_HEADERS,
+            rows(data.media, ["status", "count", "bytes"]),
+          ) +
+          table(
+            COPY.OPERATOR_CLEANUP,
+            COPY.OPERATOR_CLEANUP_HEADERS,
+            rows(data.vault_cleanup, ["state", "count"]),
+          ),
       );
     }
   } catch (error) {
@@ -1542,7 +1609,7 @@ document.addEventListener("submit", async (event) => {
           : message
           ? `/api/messages/${message}/delete`
           : `/api/chats/${S.chat}/delete`;
-      await api.request(path, {
+      const result = await api.request(path, {
         method: "POST",
         body: {
           confirmation: data.get("confirmation"),
@@ -1551,15 +1618,21 @@ document.addEventListener("submit", async (event) => {
         },
       });
       modal.close();
+      const status = fill(
+        COPY.VAULT_DELETION_STATUS,
+        fmt(result.vault_pending || 0),
+        fmt(result.vault_manual || 0),
+      );
       if (all) {
         S.token = "";
         S.csrf = "";
         clearPrivate();
         showLogin(COPY.ARCHIVE_DELETED);
+        toast(status);
       } else {
         S.chats = (await api.request("/api/chats")).items;
         await load();
-        toast(COPY.DONE);
+        toast(status);
       }
     }
   } catch (error) {

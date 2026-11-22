@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS archive_events (
  kind TEXT NOT NULL, occurred_at REAL NOT NULL, payload TEXT NOT NULL DEFAULT '{}', dedupe TEXT NOT NULL UNIQUE
 );
 CREATE INDEX IF NOT EXISTS archive_events_owner ON archive_events(owner_id,occurred_at,id);
+CREATE INDEX IF NOT EXISTS archive_events_chat ON archive_events(owner_id,chat_id,occurred_at,id);
 CREATE TABLE IF NOT EXISTS archive_tasks (
  id INTEGER PRIMARY KEY, owner_id INTEGER NOT NULL REFERENCES archive_owners(owner_id) ON DELETE CASCADE,
  kind TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
@@ -74,6 +75,24 @@ CREATE TABLE IF NOT EXISTS archive_tasks (
  result TEXT, progress INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS archive_tasks_claim ON archive_tasks(status,available_at,id);
+CREATE INDEX IF NOT EXISTS archive_tasks_fair ON archive_tasks(owner_id,updated_at);
+CREATE TABLE IF NOT EXISTS archive_vault_copies (
+ owner_id INTEGER NOT NULL, media_id TEXT NOT NULL, chat_id INTEGER NOT NULL, telegram_id INTEGER NOT NULL,
+ state TEXT NOT NULL DEFAULT 'live', attempts INTEGER NOT NULL DEFAULT 0, available_at REAL NOT NULL DEFAULT 0,
+ PRIMARY KEY(chat_id,telegram_id)
+);
+CREATE INDEX IF NOT EXISTS archive_vault_copies_media ON archive_vault_copies(media_id);
+CREATE INDEX IF NOT EXISTS archive_vault_copies_state ON archive_vault_copies(state,available_at);
+INSERT OR IGNORE INTO archive_vault_copies(owner_id,media_id,chat_id,telegram_id)
+ SELECT a.owner_id,a.id,o.vault_chat_id,a.vault_message_id FROM archive_media a
+ JOIN archive_owners o ON o.owner_id=a.owner_id WHERE o.vault_chat_id IS NOT NULL AND a.vault_message_id IS NOT NULL;
+CREATE TRIGGER IF NOT EXISTS archive_vault_cleanup AFTER DELETE ON archive_media BEGIN
+ UPDATE archive_vault_copies SET state='pending' WHERE media_id=old.id AND state='live';
+END;
+CREATE TRIGGER IF NOT EXISTS archive_event_cancel_notice AFTER DELETE ON archive_events BEGIN
+ UPDATE archive_tasks SET status='done',dedupe=NULL,error_code='record_removed'
+ WHERE dedupe='notify:' || old.id;
+END;
 CREATE TABLE IF NOT EXISTS archive_sessions (
  token_hash TEXT PRIMARY KEY, owner_id INTEGER NOT NULL REFERENCES archive_owners(owner_id) ON DELETE CASCADE,
  csrf_hash TEXT NOT NULL, expires_at REAL NOT NULL, unlocked_until REAL NOT NULL DEFAULT 0,

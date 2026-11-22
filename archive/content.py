@@ -18,7 +18,7 @@ def clean_filename(name: str, fallback: str) -> str:
 def message_payload(message: Message) -> dict:
     media = []
     if message.photo:
-        item = message.photo[-1]
+        item = max(message.photo, key=lambda photo: (photo.width * photo.height, photo.file_size or 0))
         media.append(
             {
                 "file_id": item.file_id,
@@ -31,6 +31,7 @@ def message_payload(message: Message) -> dict:
         )
     for kind, extension, default_mime in (
         ("video", "mp4", "video/mp4"),
+        ("live_photo", "mp4", "video/mp4"),
         ("animation", "mp4", "video/mp4"),
         ("document", "bin", "application/octet-stream"),
         ("audio", "m4a", "audio/mp4"),
@@ -39,7 +40,7 @@ def message_payload(message: Message) -> dict:
         ("sticker", "webp", "image/webp"),
     ):
         item = getattr(message, kind, None)
-        if item:
+        if item and (kind != "document" or not message.animation):
             name = getattr(item, "file_name", None) or f"{kind}-{message.message_id}.{extension}"
             media.append(
                 {
@@ -65,6 +66,10 @@ def message_payload(message: Message) -> dict:
         "ephemeral": is_disappearing(message),
         "reply_to": message.reply_to_message.message_id if message.reply_to_message else None,
     }
+
+
+def visible_content(payload: dict) -> tuple:
+    return payload["body"], tuple(sorted((item["kind"], item["unique_id"]) for item in payload["media"]))
 
 
 def word_diff(before: str, after: str) -> list[dict]:

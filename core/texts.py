@@ -243,7 +243,7 @@ ARCHIVE_REASON_KEYWORD = "Во входящем сообщении найден�
 ARCHIVE_REASON_PROFILE = "Собеседник изменил имя или username."
 ARCHIVE_REASON_DELETED_BATCH = "Telegram сообщил об удалении {count} сообщений в этой переписке."
 ARCHIVE_REASON_MATCHES = "Совпало: {words}."
-ARCHIVE_AUTHOR_OPTOUT = "Сохранение твоих сообщений в архивах этого бота отключено для всех владельцев. Содержимое, версии и локальные файлы удалены. Копии и уже отправленные экспорты в Telegram удаляются отдельно. /optin — снова разрешить сохранение новых сообщений."
+ARCHIVE_AUTHOR_OPTOUT = "Сохранение твоих сообщений отключено для всех владельцев. Записи и локальные файлы удалены. Бот попробует удалить известные ему копии в группах-хранилищах. Остатки в Telegram, скачанные экспорты и резервные копии удаляют их владельцы. /optin — снова разрешить сохранение новых сообщений."
 ARCHIVE_AUTHOR_OPTIN = "Сохранение твоих новых сообщений снова разрешено. Удалённая история не восстанавливается."
 ARCHIVE_AUTHOR_OPTOUT_COMMAND = "Запретить архивировать мои сообщения"
 ARCHIVE_AUTHOR_OPTIN_COMMAND = "Разрешить архивировать мои сообщения"
@@ -251,7 +251,19 @@ ARCHIVE_CONFIG_DOMAIN_MISMATCH = "ARCHIVE_DOMAIN должен совпадать
 ARCHIVE_CONFIG_DOMAIN_REQUIRED = "Для публикации архива укажи ARCHIVE_DOMAIN."
 SERVICES_YTDLP_BLOCKED = "Пост недоступен."
 SERVICES_YTDLP_FORMAT_UNAVAILABLE = "Сайт не предоставил подходящий видеоформат."
-ARCHIVE_REASON_REPLY_MEDIA = "Сохранено вложение из ответа на сообщение."
+ARCHIVE_REASON_REPLY_MEDIA = (
+    "Telegram передал признак одноразового просмотра или таймера. Файл поставлен в приоритетную очередь."
+)
+ARCHIVE_REASON_PROTECTED = "Telegram пометил вложение как защищённое. Статус сохранения доступен в архиве."
+ARCHIVE_SERVICE_EPHEMERAL = "Исчезающее вложение"
+ARCHIVE_SERVICE_PROTECTED_ATTACHMENT = "Защищённое вложение"
+ARCHIVE_SERVICE_PREVIOUS_MISSING = "Исходная версия недоступна"
+ARCHIVE_SERVICE_ATTACHMENT_CHANGED = "Вложения изменились"
+ARCHIVE_SERVICE_EDIT_COMPARISON = (
+    "\n\n<b>Было</b>\n<blockquote>{before}</blockquote>\n<b>Стало</b>\n<blockquote>{after}</blockquote>"
+)
+ARCHIVE_SERVICE_EXPORT_INVALIDATED = "Данные архива удалены во время подготовки экспорта."
+ARCHIVE_SERVICE_EXPORT_INCOMPLETE = "Telegram прервал отправку архива. Доставлены только первые части."
 
 HANDLERS_CALLBACKS_ALREADY_QUEUED = "Уже в очереди. Пришлю файл один раз."
 
@@ -271,7 +283,7 @@ GROUP_MODE_COMMAND_SLIDESHOW = "Слайдшоу с музыкой в этой �
 
 ARCHIVE_SERVICE_NOTIFICATION_HEADER = "<b>{title}</b>\n{chat}"
 
-ARCHIVE_SERVICE_EMPTY_PREVIEW = "Медиа без подписи или содержимое, которое бот не успел сохранить."
+ARCHIVE_SERVICE_EMPTY_PREVIEW = "Без текста или подписи"
 
 HANDLERS_ARCHIVE_OVERVIEW = "Архив переписок\n\nСохранение: {state}\nTelegram Business: {connection}\n\n1. Подключи ThreadDock в Telegram → Настройки → Telegram Business → Чат-боты и выбери переписки.\n2. Включи сохранение командой /archive_on или в приложении.\n3. Открой архив кнопкой ниже: там переписки, поиск, правки, удаления и медиа.\n\nАрхив сохраняет новые сообщения после включения. Старую историю Telegram бот получить не может.\n/pause — пауза, /mute — уведомления, /export — выгрузить архив."
 
