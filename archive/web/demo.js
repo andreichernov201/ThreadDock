@@ -31,6 +31,7 @@ export function createDemoApi() {
       "video_note",
       "animation",
       "sticker",
+      "live_photo",
     ],
     has_pin: false,
     auto_lock: 300,

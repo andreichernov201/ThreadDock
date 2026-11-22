@@ -4,6 +4,7 @@ import hmac
 import json
 import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 from urllib.parse import urlencode
@@ -19,6 +20,7 @@ from archive.config import ArchiveSettings
 from archive.content import message_payload
 from archive.exports import safe_csv, write_export
 from archive.repository import ArchiveRepository
+from archive.schema import LEGACY_MEDIA_TYPES, migrate
 from archive.service import ArchiveService, LimitedWriter, quiet_delay
 from archive.web import create_web_app
 from core.errors import MediaError
@@ -200,6 +202,35 @@ class ArchivePolicyTests(ArchiveFixture, unittest.TestCase):
 
 
 class EventMediaPolicyTests(ArchiveFixture, unittest.TestCase):
+    def test_live_photos_migrate_defaults_and_requeue_only_for_enabled_owners(self):
+        self.repo.update_owner(10, {"media_types": list(LEGACY_MEDIA_TYPES)})
+        self.repo.update_owner(20, {"media_types": ["photo"]})
+        identifier = self.ingest(media=[self.photo("motion", kind="live_photo")], archived=True)
+        self.assertEqual(self.repo.message(10, identifier)["media"], [])
+        with self.repo.db:
+            self.repo.db.execute("DELETE FROM state WHERE key='archive_media_flags_v1'")
+        migrate(self.repo.db)
+        migrate(self.repo.db)
+        self.assertIn("live_photo", self.repo.owner(10)["media_types"])
+        self.assertEqual(self.repo.owner(20)["media_types"], ["photo"])
+        self.assertIn("live_photo", self.repo.ensure_owner(30)["media_types"])
+        self.repo.stage_untriggered_media()
+        self.assertEqual(self.repo.message(10, identifier)["media"][0]["status"], "pending")
+        self.assertEqual(self.repo.claim()["kind"], "media")
+
+    def test_legacy_migration_keeps_explicit_protection_separate_from_disappearance(self):
+        saved = self.ingest(ephemeral=True, media=[self.photo("ephemeral")])
+        protected = self.ingest(telegram_id=2, ephemeral=True, protected=True, media=[self.photo("both")])
+        with self.repo.db:
+            self.repo.db.execute("UPDATE archive_media SET protected=1,status='protected'")
+            self.repo.db.execute("ALTER TABLE archive_media DROP COLUMN ephemeral")
+            self.repo.db.execute("DELETE FROM state WHERE key='archive_media_flags_v1'")
+        migrate(self.repo.db)
+        first = self.repo.message(10, saved)["media"][0]
+        second = self.repo.message(10, protected)["media"][0]
+        self.assertEqual((first["ephemeral"], first["protected"], first["status"]), (1, 0, "remote"))
+        self.assertEqual((second["ephemeral"], second["protected"], second["status"]), (1, 1, "protected"))
+
     def test_ordinary_replied_media_has_no_archive_task(self):
         identifier = self.ingest(media=[self.photo()], captured_from_reply=True)
         self.assertEqual(self.repo.message(10, identifier)["media"], [])
@@ -423,6 +454,62 @@ class RepositoryTests(ArchiveFixture, unittest.TestCase):
 
 
 class WebTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_uncertain_send_can_only_be_replaced_by_explicit_confirmation(self):
+        identifier = self.ingest(media=[self.photo()], archived=True)
+        media = self.repo.message(10, identifier)["media"][0]["id"]
+        route = f"/api/media/{media}/send"
+        response = await self.request("POST", route, {})
+        original = json.loads(response.body)["task_id"]
+        self.repo.task_status(original, "sending")
+        self.repo.recover()
+        with self.repo.db:
+            self.repo.db.execute(
+                "UPDATE archive_tasks SET updated_at=? WHERE id=?", (time.time() - 8 * 86400, original)
+            )
+        self.service.maintain()
+        self.assertEqual(self.repo.task(10, original)["status"], "uncertain")
+        created = self.repo.task(10, original)["created_at"]
+        self.assertEqual(json.loads((await self.request("POST", route, {})).body)["task_id"], original)
+        self.assertEqual(
+            (
+                await self.request(
+                    "POST",
+                    route + "/confirm",
+                    {"task_id": original, "created_at": created, "checked_chat": False},
+                )
+            ).status,
+            400,
+        )
+        other = self.ingest(telegram_id=2, media=[self.photo("other")], archived=True)
+        other_media = self.repo.message(10, other)["media"][0]["id"]
+        proof = {"task_id": original, "created_at": created, "checked_chat": True}
+        self.assertEqual(
+            (await self.request("POST", route + "/confirm", proof | {"created_at": created + 1})).status,
+            404,
+        )
+        self.assertEqual((await self.request("POST", f"/api/media/{other_media}/send/confirm", proof)).status, 404)
+        results = await asyncio.gather(*[self.request("POST", route + "/confirm", proof) for _ in range(10)])
+        self.assertEqual({response.status for response in results}, {202})
+        replacements = {json.loads(response.body)["task_id"] for response in results}
+        self.assertEqual(len(replacements), 1)
+        replacement = replacements.pop()
+        self.assertNotEqual(replacement, original)
+        self.assertEqual(self.repo.task(10, original)["status"], "superseded")
+        self.assertEqual(self.repo.task(10, replacement)["status"], "pending")
+        self.assertEqual(json.loads((await self.request("POST", route, {})).body)["task_id"], replacement)
+        self.assertEqual(
+            self.repo.db.execute("SELECT count(*) FROM archive_tasks WHERE kind='send_media'").fetchone()[0], 2
+        )
+
+    async def test_ephemeral_send_requires_local_copy_and_respects_protection(self):
+        identifier = self.ingest(media=[self.photo("ephemeral")], ephemeral=True)
+        protected = self.ingest(telegram_id=2, media=[self.photo("both")], ephemeral=True, protected=True)
+        for message, expected_code in ((identifier, "ephemeral_copy_missing"), (protected, "protected_media")):
+            media = self.repo.message(10, message)["media"][0]["id"]
+            response = await self.request("POST", f"/api/media/{media}/send", {})
+            self.assertEqual(response.status, 400)
+            self.assertEqual(json.loads(response.body)["code"], expected_code)
+
     async def test_clear_history_and_statistics_reset_are_independent(self):
         cleared = self.ingest(media=[self.photo("cleared")], archived=True)
         foreign = self.ingest(owner=20, archived=True)
@@ -581,6 +668,50 @@ class WebTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
 
 
 class ServiceTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_live_photo_captures_and_prefetches_both_components_with_defaults(self):
+        self.database.save_connection("connection-10", 10, True, True)
+        raw = {
+            "message_id": 6,
+            "business_connection_id": "connection-10",
+            "date": int(time.time()),
+            "chat": {"id": 30, "type": "private", "first_name": "Test"},
+            "from": {"id": 30, "first_name": "Test", "is_bot": False},
+            "live_photo": {
+                "file_id": "motion",
+                "file_unique_id": "live",
+                "width": 5,
+                "height": 5,
+                "duration": 2,
+                "photo": [{"file_id": "still", "file_unique_id": "still", "width": 5, "height": 5}],
+            },
+        }
+        await self.service.capture(Message.model_validate(raw), update_id=3)
+        self.bot.download.side_effect = lambda *_, destination, **__: destination.write(b"test")
+        for _ in range(2):
+            job = self.repo.claim()
+            self.assertEqual(job["kind"], "prefetch")
+            await self.service._process(job)
+        self.assertEqual({call.args[0] for call in self.bot.download.await_args_list}, {"motion", "still"})
+        self.assertEqual(self.repo.gallery(10)["items"], [])
+        self.repo.delete_messages(10, "connection-10", 30, [6], "Test", "")
+        self.assertEqual({media["kind"] for media in self.repo.gallery(10)["items"]}, {"photo", "live_photo"})
+
+    async def test_saved_ephemeral_attachment_is_sent_from_local_file_only_on_request(self):
+        identifier = self.ingest(media=[self.photo("view-once")], ephemeral=True)
+        self.bot.download.side_effect = lambda *_, destination, **__: destination.write(b"jpeg")
+        self.bot.send_photo = AsyncMock()
+        with self.repo.db:
+            self.repo.db.execute("UPDATE archive_owners SET vault_chat_id=-100 WHERE owner_id=10")
+        await self.service._process(self.repo.claim(lane="urgent"))
+        self.bot.send_photo.assert_not_awaited()
+        media = self.repo.message(10, identifier)["media"][0]
+        self.assertEqual((media["status"], media["ephemeral"], media["protected"]), ("ready", 1, 0))
+        job = self.repo.request_media(10, media["id"], retry=False)
+        await self.service._send_media({"id": job, "payload": {"media_id": media["id"]}}, self.repo.owner(10))
+        call = self.bot.send_photo.call_args.kwargs
+        self.assertEqual(call["chat_id"], 10)
+        self.assertEqual(Path(call["photo"].path).read_bytes(), b"jpeg")
+
     async def test_direct_view_once_media_is_claimable_without_reply_or_marking_read(self):
         self.database.save_connection("connection-10", 10, True, True)
         raw = {

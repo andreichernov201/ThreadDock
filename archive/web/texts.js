@@ -272,6 +272,14 @@ export const COPY = {
   "REMOTE_FILE": "<p>Этот файл можно получить в Telegram.</p>",
   "PREVIEWMEDIA_TEMPLATE":
     '<button class="button primary" data-action="send-media" data-id="{{0}}">{{1}}</button><button class="button" data-action="retry-media" data-id="{{2}}">Повторить сохранение</button>',
+  "RETRY_MEDIA_SAVE":
+    '<button class="button" data-action="retry-media" data-id="{{0}}">{{1}}</button>',
+  "RETRY_SAVING": "Повторить сохранение",
+  "EPHEMERAL_COPY_MISSING": "Для отправки нужна сохранённая копия.",
+  "SEND_RETRY_TITLE": "Повторная отправка",
+  "OPEN_BOT_CHAT": "Открыть чат с ботом",
+  "SEND_RETRY_FORM":
+    '<form id="send-retry-form" data-media="{{0}}" data-task="{{1}}" data-created="{{2}}"><p>Telegram не подтвердил предыдущую отправку. Проверь личный чат с ботом.</p>{{3}}<label class="consent"><input type="checkbox" name="checked_chat" required>Я проверил чат, файла там нет.</label><button class="button primary" type="submit">Отправить ещё раз</button></form>',
   "DONE": "Готово",
   "DELIVERY_IS_UNCERTAIN_CHECK_THE_CHAT_BEFORE_RETRYING":
     "Отправка не подтверждена. Проверь чат перед повтором.",

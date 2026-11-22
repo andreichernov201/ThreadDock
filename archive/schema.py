@@ -1,5 +1,11 @@
 """Migration 2 adds archive tables without changing existing downloader records."""
 
+import json
+
+LEGACY_MEDIA_TYPES = ("photo", "video", "document", "audio", "voice", "video_note", "animation", "sticker")
+DEFAULT_MEDIA_TYPES = (*LEGACY_MEDIA_TYPES, "live_photo")
+DEFAULT_MEDIA_TYPES_JSON = json.dumps(DEFAULT_MEDIA_TYPES, separators=(",", ":"))
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS archive_owners (
  owner_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0, paused INTEGER NOT NULL DEFAULT 0,
@@ -11,7 +17,7 @@ CREATE TABLE IF NOT EXISTS archive_owners (
  utc_offset INTEGER NOT NULL DEFAULT 180, keywords TEXT NOT NULL DEFAULT '[]',
  exclusions TEXT NOT NULL DEFAULT '[]', whole_words INTEGER NOT NULL DEFAULT 0,
  read_mode TEXT NOT NULL DEFAULT 'none', vault_chat_id INTEGER UNIQUE,
- media_types TEXT NOT NULL DEFAULT '["photo","video","document","audio","voice","video_note","animation","sticker"]',
+ media_types TEXT NOT NULL DEFAULT '__DEFAULT_MEDIA_TYPES__',
  pin_hash TEXT, pin_salt TEXT, auto_lock INTEGER NOT NULL DEFAULT 300,
  auto_delete_disconnected INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL
 );
@@ -55,7 +61,8 @@ CREATE TABLE IF NOT EXISTS archive_media (
  message_id INTEGER NOT NULL REFERENCES archive_messages(id) ON DELETE CASCADE,
  file_id TEXT NOT NULL, unique_id TEXT NOT NULL, kind TEXT NOT NULL,
  filename TEXT NOT NULL, mime_type TEXT NOT NULL, size INTEGER NOT NULL DEFAULT 0,
- protected INTEGER NOT NULL DEFAULT 0, local_path TEXT, status TEXT NOT NULL DEFAULT 'pending',
+ protected INTEGER NOT NULL DEFAULT 0, ephemeral INTEGER NOT NULL DEFAULT 0,
+ local_path TEXT, status TEXT NOT NULL DEFAULT 'pending',
  vault_message_id INTEGER, created_at REAL NOT NULL, UNIQUE(message_id,unique_id,kind)
 );
 CREATE INDEX IF NOT EXISTS archive_media_owner ON archive_media(owner_id,created_at);
@@ -172,4 +179,30 @@ PRAGMA user_version = 2;
 
 
 def migrate(connection) -> None:
-    connection.executescript(SCHEMA)
+    connection.executescript(SCHEMA.replace("__DEFAULT_MEDIA_TYPES__", DEFAULT_MEDIA_TYPES_JSON))
+    with connection:
+        if connection.execute("SELECT 1 FROM state WHERE key='archive_media_flags_v1'").fetchone():
+            return
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(archive_media)")}
+        if "ephemeral" not in columns:
+            connection.execute("ALTER TABLE archive_media ADD COLUMN ephemeral INTEGER NOT NULL DEFAULT 0")
+        connection.execute(
+            "UPDATE archive_owners SET media_types=? WHERE json(media_types)=?",
+            (DEFAULT_MEDIA_TYPES_JSON, json.dumps(LEGACY_MEDIA_TYPES, separators=(",", ":"))),
+        )
+        # Unblock legacy disappearing attachments only where a saved version identifies the file.
+        connection.execute(
+            """WITH evidence AS (
+                SELECT a.id,max(coalesce(json_extract(v.payload,'$.ephemeral'),0)) AS ephemeral,
+                       max(coalesce(json_extract(v.payload,'$.protected'),0)) AS protected
+                FROM archive_media a JOIN archive_versions v ON v.message_id=a.message_id
+                JOIN json_each(v.payload,'$.media') item
+                  ON json_extract(item.value,'$.unique_id')=a.unique_id AND json_extract(item.value,'$.kind')=a.kind
+                WHERE json_extract(v.payload,'$.ephemeral')=1 OR json_extract(v.payload,'$.protected')=1
+                GROUP BY a.id
+            )
+            UPDATE archive_media AS a SET ephemeral=1,protected=e.protected,status=CASE
+                WHEN e.protected=0 AND a.status='protected' THEN 'remote' ELSE a.status END
+            FROM evidence e WHERE e.id=a.id AND e.ephemeral=1"""
+        )
+        connection.execute("INSERT INTO state(key,value) VALUES ('archive_media_flags_v1','1')")

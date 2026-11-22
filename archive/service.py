@@ -590,7 +590,12 @@ class ArchiveService:
             return
         if media["local_path"]:
             self._media_status(media, "ready", prefetch)
-        if owner["vault_chat_id"] and not media["vault_message_id"] and not media["protected"]:
+        if (
+            owner["vault_chat_id"]
+            and not media["vault_message_id"]
+            and not media["protected"]
+            and not media["ephemeral"]
+        ):
             if current := self.repository.media(owner["owner_id"], media["id"]):
                 await self._copy_to_vault(task, owner, current)
 
@@ -621,11 +626,12 @@ class ArchiveService:
                     (topic_id, owner["owner_id"], media["chat_id"]),
                 )
         message = self.repository.message(owner["owner_id"], media["message_id"])
-        if message is None:
+        current = self.repository.media(owner["owner_id"], media["id"])
+        if message is None or current is None or current["protected"] or current["ephemeral"]:
             return
         caption = self._copy_caption(message)
         self.repository.task_status(task["id"], "sending")
-        sent = await self._send_file(owner["vault_chat_id"], media, caption=caption, topic_id=topic_id)
+        sent = await self._send_file(owner["vault_chat_id"], current, caption=caption, topic_id=topic_id)
         with self.repository.db:
             saved = self.repository.db.execute(
                 "UPDATE archive_media SET vault_message_id=? WHERE owner_id=? AND id=?",
@@ -670,6 +676,8 @@ class ArchiveService:
             if not local or not local.is_file():
                 raise MediaError(T.ARCHIVE_WEB_REMOTE_MEDIA, code="live_photo_unavailable")
             kind, value = "video", FSInputFile(local, filename=media["filename"])
+        elif media["ephemeral"] and local is not None:
+            value = FSInputFile(local, filename=media["filename"])
         if kind not in {"sticker", "video_note"}:
             options["caption"] = caption
         send = getattr(self.bot, f"send_{kind}")
@@ -723,10 +731,19 @@ class ArchiveService:
 
     async def _send_media(self, task: dict, owner: dict):
         media = self.repository.media(owner["owner_id"], task["payload"]["media_id"])
-        if not media or media["protected"]:
-            raise MediaError(T.ARCHIVE_SERVICE_PROTECTED_MEDIA, code="protected_media")
+        if not media:
+            raise LookupError("Media not found")
+        self.check_media_send(media)
         self.repository.task_status(task["id"], "sending")
         await self._send_file(owner["owner_id"], media, caption=f"{media['chat_title']} · {media['filename']}"[:1000])
+
+    def check_media_send(self, media: dict) -> None:
+        if media["protected"]:
+            raise MediaError(T.ARCHIVE_WEB_PROTECTED_MEDIA, code="protected_media")
+        if media["ephemeral"] and (
+            not media["local_path"] or not self.safe_path(media["local_path"], self.blobs).is_file()
+        ):
+            raise MediaError(T.ARCHIVE_WEB_EPHEMERAL_COPY_MISSING, code="ephemeral_copy_missing")
 
     async def _export(self, task: dict, owner: dict) -> dict:
         owner_id = owner["owner_id"]
@@ -844,7 +861,7 @@ class ArchiveService:
             self.repository.db.execute("UPDATE archive_chats SET topic_id=NULL WHERE owner_id=?", (owner_id,))
             self.repository.db.execute("UPDATE archive_media SET vault_message_id=NULL WHERE owner_id=?", (owner_id,))
             for media in self.repository.db.execute(
-                "SELECT id FROM archive_media WHERE owner_id=? AND protected=0", (owner_id,)
+                "SELECT id FROM archive_media WHERE owner_id=? AND protected=0 AND ephemeral=0", (owner_id,)
             ).fetchall():
                 self.repository._enqueue(owner_id, "media", {"media_id": media[0]}, f"vault:{chat_id}:{media[0]}")
 
@@ -914,7 +931,11 @@ class ArchiveService:
                     if deleted:
                         self.invalidate_export(owner["owner_id"])
             self.repository.db.execute(
-                "DELETE FROM archive_tasks WHERE status IN ('done','failed','uncertain') AND updated_at<?",
+                """DELETE FROM archive_tasks AS t
+                WHERE status IN ('done','failed','uncertain','superseded') AND updated_at<?
+                AND NOT (t.status='uncertain' AND t.kind='send_media' AND EXISTS (
+                    SELECT 1 FROM archive_media a WHERE a.owner_id=t.owner_id AND a.id=json_extract(t.payload,'$.media_id')
+                ))""",
                 (now - 7 * 86400,),
             )
         known = {

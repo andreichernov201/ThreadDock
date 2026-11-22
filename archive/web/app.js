@@ -550,7 +550,7 @@ function renderGallery() {
         }">${
           e(t(media.status === "ready" ? COPY.SAVED : COPY.IN_TELEGRAM))
         }</span>${
-          media.protected
+          media.protected || (media.ephemeral && media.status !== "ready")
             ? ""
             : `<button class="text-button" data-action="send-media" data-id="${media.id}">${
               e(t(COPY.SEND_TO_TELEGRAM))
@@ -1240,9 +1240,17 @@ async function previewMedia(id) {
     if (S.locked || error.name === "AbortError") return;
     openModal(
       media.filename,
-      `<p>${e(error.message)}</p>`,
+      `<p>${
+        e(
+          media.ephemeral && !media.protected
+            ? t(COPY.EPHEMERAL_COPY_MISSING)
+            : error.message,
+        )
+      }</p>`,
       media.protected
         ? ""
+        : media.ephemeral
+        ? fill(COPY.RETRY_MEDIA_SAVE, id, e(t(COPY.RETRY_SAVING)))
         : fill(COPY.PREVIEWMEDIA_TEMPLATE, id, e(t(COPY.SEND_TO_TELEGRAM)), id),
     );
   }
@@ -1271,17 +1279,19 @@ async function loadThumbnails() {
     } catch { /* A remote-only or expired preview remains a file card. */ }
   }
 }
-async function trackTask(id) {
+async function trackTask(id, promptRetry = false) {
   if (!id) return;
   for (let index = 0; index < 60 && !S.locked; index++) {
     await new Promise((resolve) => setTimeout(resolve, 2000));
     try {
       const job = await api.request(`/api/tasks/${id}`);
+      if (job.status === "superseded") return;
       if (job.status === "done") {
         toast(COPY.DONE);
         return;
       }
       if (["failed", "uncertain"].includes(job.status)) {
+        if (promptRetry && job.status === "uncertain") return job;
         toast(
           job.status === "uncertain"
             ? COPY.DELIVERY_IS_UNCERTAIN_CHECK_THE_CHAT_BEFORE_RETRYING
@@ -1292,6 +1302,34 @@ async function trackTask(id) {
     } catch {
       return;
     }
+  }
+}
+async function sendArchiveMedia(mediaId, previous = null) {
+  const response = await api.request(
+    `/api/media/${mediaId}/send${previous ? "/confirm" : ""}`,
+    {
+      method: "POST",
+      body: previous ? { ...previous, checked_chat: true } : {},
+    },
+  );
+  if (previous && modal.open) modal.close();
+  if (response.status !== "uncertain") toast(COPY.ADDED_TO_THE_QUEUE);
+  const uncertain = await trackTask(response.task_id, true);
+  if (uncertain && !S.locked) {
+    openModal(
+      COPY.SEND_RETRY_TITLE,
+      fill(
+        COPY.SEND_RETRY_FORM,
+        e(mediaId),
+        uncertain.id,
+        uncertain.created_at,
+        S.meta.bot_username
+          ? `<button type="button" class="button subtle" data-action="open-bot-chat">${
+            e(t(COPY.OPEN_BOT_CHAT))
+          }</button>`
+          : "",
+      ),
+    );
   }
 }
 async function queue(path, body = {}, wait = false) {
@@ -1421,7 +1459,7 @@ document.addEventListener("click", async (event) => {
     else if (action === "send-media") {
       button.disabled = true;
       try {
-        await queue(`/api/media/${button.dataset.id}/send`, {}, true);
+        await sendArchiveMedia(button.dataset.id);
       } finally {
         button.disabled = false;
       }
@@ -1432,6 +1470,8 @@ document.addEventListener("click", async (event) => {
       } finally {
         button.disabled = false;
       }
+    } else if (action === "open-bot-chat" && S.meta.bot_username) {
+      tg?.openTelegramLink(`https://t.me/${S.meta.bot_username}`);
     } else if (action === "vault-request") {
       await queue("/api/vault/request");
       if (S.meta.bot_username) {
@@ -1606,6 +1646,13 @@ document.addEventListener("submit", async (event) => {
       modal.close();
       S.chats = (await api.request("/api/chats")).items;
       renderFeed();
+    } else if (form.id === "send-retry-form") {
+      if (data.has("checked_chat")) {
+        await sendArchiveMedia(form.dataset.media, {
+          task_id: Number(form.dataset.task),
+          created_at: Number(form.dataset.created),
+        });
+      }
     } else if (form.id === "vault-form") {
       await api.request("/api/vault", {
         method: "POST",

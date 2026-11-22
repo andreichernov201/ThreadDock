@@ -9,7 +9,7 @@ import uuid
 
 from archive.auth import new_token, token_hash
 from archive.content import keyword_matches, visible_content, word_diff
-from archive.schema import migrate
+from archive.schema import DEFAULT_MEDIA_TYPES, DEFAULT_MEDIA_TYPES_JSON, migrate
 from core import texts as T
 
 logger = logging.getLogger(__name__)
@@ -26,7 +26,7 @@ BOOLEAN_SETTINGS = {
     "whole_words",
     "auto_delete_disconnected",
 }
-MEDIA_TYPES = {"photo", "video", "document", "audio", "voice", "video_note", "animation", "sticker", "live_photo"}
+MEDIA_TYPES = set(DEFAULT_MEDIA_TYPES)
 RECORD_KINDS = "('edited','deleted','unknown_deleted','reply_media','protected_media')"
 FEED_KINDS = RECORD_KINDS[:-1] + ",'profile')"
 LATEST_VERSION = "changed_at DESC,coalesce(json_extract(payload,'$.archive_edit'),1) DESC,id DESC"
@@ -92,8 +92,8 @@ class ArchiveRepository:
     def ensure_owner(self, owner_id: int, language: str = "ru") -> dict:
         with self.db:
             self.db.execute(
-                "INSERT OR IGNORE INTO archive_owners(owner_id,language,created_at) VALUES (?,?,?)",
-                (owner_id, "ru" if language.startswith("ru") else "en", time.time()),
+                "INSERT OR IGNORE INTO archive_owners(owner_id,language,created_at,media_types) VALUES (?,?,?,?)",
+                (owner_id, "ru" if language.startswith("ru") else "en", time.time(), DEFAULT_MEDIA_TYPES_JSON),
             )
         return self.owner(owner_id)
 
@@ -436,9 +436,10 @@ class ArchiveRepository:
             for item in payload["media"]:
                 identifier = uuid.uuid4().hex
                 self.db.execute(
-                    """INSERT INTO archive_media(id,owner_id,message_id,file_id,unique_id,kind,filename,mime_type,size,protected,created_at,status)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,'staged') ON CONFLICT(message_id,unique_id,kind) DO UPDATE SET
-                    file_id=excluded.file_id,protected=max(archive_media.protected,excluded.protected)""",
+                    """INSERT INTO archive_media(id,owner_id,message_id,file_id,unique_id,kind,filename,mime_type,size,protected,ephemeral,created_at,status)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'staged') ON CONFLICT(message_id,unique_id,kind) DO UPDATE SET
+                    file_id=excluded.file_id,protected=max(archive_media.protected,excluded.protected),
+                    ephemeral=max(archive_media.ephemeral,excluded.ephemeral)""",
                     (
                         identifier,
                         owner_id,
@@ -449,7 +450,8 @@ class ArchiveRepository:
                         item["filename"],
                         item["mime_type"],
                         item["size"],
-                        int(payload["protected"] or bool(payload.get("ephemeral"))),
+                        int(payload["protected"]),
+                        int(bool(payload.get("ephemeral"))),
                         now,
                     ),
                 )
@@ -630,13 +632,15 @@ class ArchiveRepository:
             self.db.execute(
                 """UPDATE archive_events SET kind='protected_media' WHERE kind='reply_media' AND EXISTS (
                 SELECT 1 FROM archive_versions v WHERE v.id=archive_events.version_id
-                AND json_extract(v.payload,'$.protected')=1 AND coalesce(json_extract(v.payload,'$.ephemeral'),0)=0)"""
+                AND json_extract(v.payload,'$.protected')=1 AND coalesce(json_extract(v.payload,'$.ephemeral'),0)=0)
+                AND NOT EXISTS(SELECT 1 FROM archive_media a WHERE a.message_id=archive_events.message_id AND a.ephemeral=1)"""
             )
             # Earlier versions treated every replied attachment as disappearing.
             self.db.execute(
                 """DELETE FROM archive_events WHERE kind='reply_media' AND NOT EXISTS (
                 SELECT 1 FROM archive_versions v WHERE v.id=archive_events.version_id
-                AND (json_extract(v.payload,'$.protected')=1 OR json_extract(v.payload,'$.ephemeral')=1))"""
+                AND (json_extract(v.payload,'$.protected')=1 OR json_extract(v.payload,'$.ephemeral')=1))
+                AND NOT EXISTS(SELECT 1 FROM archive_media a WHERE a.message_id=archive_events.message_id AND a.ephemeral=1)"""
             )
             rows = self.db.execute(
                 f"SELECT a.id,a.local_path FROM archive_media a JOIN archive_messages m ON m.id=a.message_id WHERE NOT ({RETAINED_MESSAGE}) AND a.status!='staged'"
@@ -650,6 +654,15 @@ class ArchiveRepository:
                 WHERE kind='media' AND status NOT IN ('sending','uncertain') AND json_extract(payload,'$.media_id') IN (
                   SELECT id FROM archive_media WHERE status='staged')"""
             )
+            live_photos = self.db.execute(
+                f"""SELECT a.owner_id,a.message_id,max(a.ephemeral) AS urgent FROM archive_media a
+                JOIN archive_messages m ON m.id=a.message_id JOIN archive_owners o ON o.owner_id=a.owner_id
+                WHERE a.kind='live_photo' AND a.status='staged' AND o.enabled=1 AND o.paused=0
+                AND EXISTS(SELECT 1 FROM json_each(o.media_types) WHERE value='live_photo') AND {RETAINED_MESSAGE}
+                GROUP BY a.owner_id,a.message_id"""
+            ).fetchall()
+            for row in live_photos:
+                self._activate_media(row["owner_id"], row["message_id"], ["live_photo"], urgent=bool(row["urgent"]))
         return [row["local_path"] for row in rows if row["local_path"]]
 
     def previous_version(self, owner_id: int, message_id: int, version_id: int) -> dict | None:
@@ -841,7 +854,7 @@ class ArchiveRepository:
         return [
             dict(row)
             for row in self.db.execute(
-                f"SELECT a.id,a.kind,a.filename,a.mime_type,a.size,a.status,a.protected,a.vault_message_id FROM archive_media a JOIN archive_messages m ON m.id=a.message_id WHERE a.owner_id=? AND a.message_id=? AND a.status!='staged' AND {RETAINED_MESSAGE} ORDER BY a.created_at,a.id",
+                f"SELECT a.id,a.kind,a.filename,a.mime_type,a.size,a.status,a.protected,a.ephemeral,a.vault_message_id FROM archive_media a JOIN archive_messages m ON m.id=a.message_id WHERE a.owner_id=? AND a.message_id=? AND a.status!='staged' AND {RETAINED_MESSAGE} ORDER BY a.created_at,a.id",
                 (owner_id, identifier),
             )
         ]
@@ -849,7 +862,7 @@ class ArchiveRepository:
     def gallery(self, owner_id: int, *, chat_id: int = 0, cursor: int = 0, limit: int = 40) -> dict:
         # A timestamp alone loses media when an album has identical creation times.
         rows = self.db.execute(
-            f"SELECT a.rowid AS position,a.id,a.kind,a.filename,a.mime_type,a.size,a.status,a.protected,a.created_at,a.message_id,m.chat_id,c.title AS chat_title FROM archive_media a JOIN archive_messages m ON m.id=a.message_id JOIN archive_chats c ON c.id=m.chat_id WHERE a.owner_id=? AND a.status!='staged' AND {RETAINED_MESSAGE} AND (?=0 OR m.chat_id=?) AND (?=0 OR a.rowid<?) ORDER BY a.rowid DESC LIMIT ?",
+            f"SELECT a.rowid AS position,a.id,a.kind,a.filename,a.mime_type,a.size,a.status,a.protected,a.ephemeral,a.created_at,a.message_id,m.chat_id,c.title AS chat_title FROM archive_media a JOIN archive_messages m ON m.id=a.message_id JOIN archive_chats c ON c.id=m.chat_id WHERE a.owner_id=? AND a.status!='staged' AND {RETAINED_MESSAGE} AND (?=0 OR m.chat_id=?) AND (?=0 OR a.rowid<?) ORDER BY a.rowid DESC LIMIT ?",
             (owner_id, chat_id, chat_id, cursor, cursor, limit + 1),
         ).fetchall()
         items = [dict(row) for row in rows[:limit]]
@@ -867,7 +880,9 @@ class ArchiveRepository:
         with self.db:
             return self._enqueue(owner_id, kind, payload, dedupe)
 
-    def request_media(self, owner_id: int, media_id: str, *, retry: bool) -> int:
+    def request_media(
+        self, owner_id: int, media_id: str, *, retry: bool, confirmed_retry: tuple[int, float] | None = None
+    ) -> int:
         kind = "media" if retry else "send_media"
         now = time.time()
         with self.db:
@@ -876,7 +891,23 @@ class ArchiveRepository:
                 AND json_extract(payload,'$.media_id')=? ORDER BY id DESC LIMIT 1""",
                 (owner_id, kind, media_id),
             ).fetchone()
-            if previous and (
+            key = f"request:{kind}:{owner_id}:{media_id}:{int(now // 15)}"
+            if confirmed_retry is not None:
+                task_id, created_at = confirmed_retry
+                original = self.db.execute(
+                    """SELECT status FROM archive_tasks WHERE id=? AND created_at=? AND owner_id=?
+                    AND kind='send_media' AND json_extract(payload,'$.media_id')=?""",
+                    (task_id, created_at, owner_id, media_id),
+                ).fetchone()
+                if original is None:
+                    raise LookupError("Media send task not found")
+                key = f"confirmed:{owner_id}:{media_id}:{task_id}:{float(created_at)}"
+                replacement = self.db.execute("SELECT id FROM archive_tasks WHERE dedupe=?", (key,)).fetchone()
+                if replacement:
+                    return replacement["id"]
+                if original["status"] != "uncertain" or previous is None or previous["id"] != task_id:
+                    raise ValueError(T.ARCHIVE_WEB_SEND_RETRY_STALE)
+            elif previous and (
                 previous["status"] in {"pending", "running", "sending", "uncertain"}
                 or now - previous["created_at"] < 15
             ):
@@ -888,8 +919,13 @@ class ArchiveRepository:
             ).fetchone()[0]
             if count >= 8:
                 return 0
-            key = f"request:{kind}:{owner_id}:{media_id}:{int(now // 15)}"
-            return self._enqueue(owner_id, kind, {"media_id": media_id, "explicit": True}, key)
+            job = self._enqueue(owner_id, kind, {"media_id": media_id, "explicit": True}, key)
+            if job and confirmed_retry is not None:
+                self.db.execute(
+                    "UPDATE archive_tasks SET status='superseded',updated_at=? WHERE owner_id=? AND id=?",
+                    (now, owner_id, task_id),
+                )
+            return job
 
     def deletion_status(self, owner_id: int) -> dict:
         return {

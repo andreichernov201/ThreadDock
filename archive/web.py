@@ -470,16 +470,32 @@ def create_web_app(service) -> web.Application:
 
     @routes.post("/api/media/{id:[a-f0-9]{32}}/send")
     async def send_media(request):
+        return queue_media_send(request)
+
+    @routes.post("/api/media/{id:[a-f0-9]{32}}/send/confirm")
+    async def confirm_media_send(request):
+        body = await body_json(request)
+        previous, created_at = body.get("task_id"), body.get("created_at")
+        if (
+            body.get("checked_chat") is not True
+            or type(previous) is not int
+            or not 0 < previous <= 10**16
+            or type(created_at) not in {int, float}
+            or not 0 < created_at < 10**11
+        ):
+            raise ValueError(T.ARCHIVE_WEB_SEND_RETRY_CHECK_CHAT)
+        return queue_media_send(request, (previous, created_at))
+
+    def queue_media_send(request, confirmed_retry=None):
         owner, identifier = request["owner"]["owner_id"], request.match_info["id"]
         media = repository.media(owner, identifier)
         if media is None:
             raise LookupError()
-        if media["protected"]:
-            raise ValueError(T.ARCHIVE_WEB_PROTECTED_MEDIA)
-        job = repository.request_media(owner, identifier, retry=False)
+        service.check_media_send(media)
+        job = repository.request_media(owner, identifier, retry=False, confirmed_retry=confirmed_retry)
         if not job:
             raise web.HTTPTooManyRequests(headers={"Retry-After": "60"})
-        return web.json_response({"task_id": job}, status=202)
+        return web.json_response({"task_id": job, "status": repository.task(owner, job)["status"]}, status=202)
 
     @routes.post("/api/media/{id:[a-f0-9]{32}}/retry")
     async def retry_media(request):

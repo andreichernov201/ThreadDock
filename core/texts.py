@@ -55,7 +55,6 @@ ARCHIVE_SERVICE_VAULT_NOT_PRIVATE = "В группе-архиве есть др�
 ARCHIVE_SERVICE_COPY_DELETED = "🗑 Удалено"
 ARCHIVE_SERVICE_COPY_EDITED = "✏️ Изменено"
 ARCHIVE_SERVICE_COPY_SAVED = "Сохранено"
-ARCHIVE_SERVICE_PROTECTED_MEDIA = "Это медиа недоступно для пересылки."
 ARCHIVE_SERVICE_REPLY_NOT_ALLOWED = "Telegram не разрешает ответ: проверь подключение и окно 24 часа."
 ARCHIVE_SERVICE_VAULT_REQUIREMENTS = (
     "Нужна личная закрытая группа с темами: только ты и бот, оба с правами управления темами."
@@ -80,6 +79,9 @@ ARCHIVE_WEB_DELETE_CONFIRMATION_REQUIRED = "Для удаления введи �
 ARCHIVE_WEB_EXCLUDE_REQUIRES_CONFIRMATION = "Используй действие «Исключить и удалить историю» с подтверждением."
 ARCHIVE_WEB_REMOTE_MEDIA = "Файл можно запросить у бота, если Telegram предоставляет к нему доступ."
 ARCHIVE_WEB_PROTECTED_MEDIA = "Защищённое медиа нельзя пересылать."
+ARCHIVE_WEB_EPHEMERAL_COPY_MISSING = "Для отправки исчезающего вложения нужна сохранённая копия файла."
+ARCHIVE_WEB_SEND_RETRY_CHECK_CHAT = "Проверь личный чат с ботом и подтверди повторную отправку."
+ARCHIVE_WEB_SEND_RETRY_STALE = "Статус отправки изменился. Открой вложение снова и проверь состояние."
 ARCHIVE_WEB_ARCHIVE_CONSENT_REQUIRED = "Подтверди сохранение разрешённых переписок."
 ARCHIVE_WEB_EXPORT_FORMAT_REQUIRED = "Выбери формат экспорта."
 ARCHIVE_WEB_REPLY_WINDOW_CLOSED = "Нет права ответа или прошло 24 часа после входящего сообщения."

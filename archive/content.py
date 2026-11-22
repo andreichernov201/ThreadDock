@@ -17,8 +17,9 @@ def clean_filename(name: str, fallback: str) -> str:
 
 def message_payload(message: Message) -> dict:
     media = []
-    if message.photo:
-        item = max(message.photo, key=lambda photo: (photo.width * photo.height, photo.file_size or 0))
+    photos = message.photo or (message.live_photo.photo if message.live_photo else None)
+    if photos:
+        item = max(photos, key=lambda photo: (photo.width * photo.height, photo.file_size or 0))
         media.append(
             {
                 "file_id": item.file_id,
