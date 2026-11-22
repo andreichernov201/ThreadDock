@@ -52,10 +52,28 @@ export const COPY = {
   "EDIT_HISTORY": "История правок",
   "BEFORE": "было",
   "AFTER": "стало",
-  "ARCHIVE_COPY_NOTE": "Удаляется только копия в архиве бота.",
+  "ARCHIVE_COPY_NOTE":
+    "Удаление записи не затрагивает исходное сообщение у собеседника.",
+  "PROTECTED_ATTACHMENTS": "Защищённые",
+  "PROTECTED_ATTACHMENT": "Защищённое вложение",
+  "PREVIOUS_UNAVAILABLE": "Исходная версия недоступна",
+  "VAULT_DELETION_STATUS":
+    "Копии в хранилище: в очереди — {{0}}, требуют ручного удаления — {{1}}",
+  "OPERATOR_QUEUE": "Очередь",
+  "OPERATOR_FILES": "Локальные вложения",
+  "OPERATOR_CLEANUP": "Удаление Telegram-копий",
+  "OPERATOR_TASK_HEADERS": [
+    "Операция",
+    "Статус",
+    "Количество",
+    "Попыток",
+    "Возраст, с",
+  ],
+  "OPERATOR_MEDIA_HEADERS": ["Статус", "Количество", "Байт"],
+  "OPERATOR_CLEANUP_HEADERS": ["Статус", "Количество"],
   "MEDIA_POLICY":
-    "В архив попадают удалённые, изменённые и исчезающие вложения. Обычные файлы не скачиваются и не копируются. Для обнаружения правок и удалений бот запоминает исходный текст и ссылки на файлы Telegram; они также нужны для статистики.",
-  "REPLY_MEDIA": "Исчезающее или защищённое вложение",
+    "Бот сохраняет исходный текст и скачивает доступные вложения в пределах лимита. В ленте и галерее появляются только удалённые, изменённые, защищённые и исчезающие вложения и события.",
+  "REPLY_MEDIA": "Исчезающее вложение",
   "LOCK_APP": "Заблокировать",
   "ARCHIVE_DESCRIPTION": "Удалённые и изменённые сообщения",
   "PROTECTED_FILE": "Защищённое вложение",
@@ -64,7 +82,8 @@ export const COPY = {
   "TRIGGERS_DESCRIPTION":
     "Удаление — Telegram сообщил, что сообщение удалили. Правка — изменились текст или вложение. Ключевое слово — совпало слово из списка во входящем сообщении. Обычные сообщения не вызывают уведомлений. Слова-исключения отключают только совпадения, а не сохранение. /optout в боте запрещает сохранять сообщения автора во всех архивах.",
   "REPLY_MEDIA_HELP":
-    "Одноразовые вложения: ответь на сообщение до открытия. Если Telegram передаст вложение боту, он попробует сохранить файл. После исчезновения восстановить его нельзя.",
+    "Одноразовые вложения: бот запрашивает файл сразу, если Telegram передал данные в сообщении или ответе. Если Telegram не передал файл либо уже закрыл доступ, восстановить его нельзя.",
+  "OPERATION_ID": "Код операции {{0}}",
 
   "OPEN_THIS_APP_USING_THE_BUTTON_IN_THREADDOCK":
     "Открой приложение кнопкой в боте ThreadDock.",
@@ -155,7 +174,8 @@ export const COPY = {
   "MEDIAN_REPLY_TIME": "Медианное время ответа",
   "MINUTE_UNIT": " мин",
   "SAMPLE_NOTICE": " · анализ выборки ",
-  "FREQUENT_WORDS_IN_DELETED_MESSAGES": "Частые слова в удалённом",
+  "FREQUENT_WORDS_IN_DELETED_MESSAGES":
+    "Частые слова в сохранившихся удалённых сообщениях",
   "INSUFFICIENT_DATA": '<p class="muted">Пока недостаточно данных.</p>',
   "INCOMING": "Входящие",
   "OUTGOING": "Исходящие",
@@ -198,11 +218,24 @@ export const COPY = {
   "VAULT_MISSING": "Группа пока не подключена",
   "CHOOSE_A_GROUP": "Выбрать группу",
   "YOUR_DATA": "Управление данными",
-  "DELETE_ALL_ARCHIVE_DATA": "Удалить весь архив",
+  "DELETE_ALL_ARCHIVE_DATA": "Удалить все данные",
+  "CLEAR_ARCHIVE_HISTORY": "Очистить историю",
+  "RESET_STATISTICS": "Сбросить статистику",
+  "STATISTICS_RESET_DONE": "Статистика сброшена.",
+  "STATISTICS_MANAGEMENT":
+    '<section class="panel setting-card"><h2>{{0}}</h2><p class="description">{{1}}</p><div class="setting-footer"><button class="button danger" data-action="delete-stats">{{2}}</button></div></section>',
+  "STATISTICS_MANAGEMENT_HINT":
+    "Очистка истории сохраняет счётчики сообщений и вложений по типам.",
+  "CLEAR_HISTORY_HINT":
+    "Переписки, версии и локальные файлы будут очищены. Счётчики, настройки и подключения сохранятся.",
+  "RESET_STATISTICS_HINT":
+    "Счётчики начнутся заново с новых сообщений. Переписки и вложения останутся доступными.",
+  "VAULT_DELETION_HINT":
+    "Бот попробует удалить известные копии в группе-хранилище. Telegram может отказать, например если прошло более 48 часов. Старые копии, уведомления, экспорты и резервные копии могут потребовать ручного удаления.",
   "OPERATOR_CARD":
     '<section class="panel setting-card"><h2>Оператор</h2><p class="description">Состояние служб и коды ошибок, без чужих переписок.</p><button class="button" data-action="operator">Состояние инстанса</button></section>',
   "RENDERSETTINGS_TEMPLATE_2":
-    '<div class="settings-grid"><form class="panel setting-card" id="storage-form"><h2>{{0}}</h2><p class="description">Сохраняются разрешённые переписки, которые бот получает после подключения. История до подключения недоступна.</p><div class="status-line"><span class="status-light {{1}}"></span>{{2}}</div>{{3}}{{4}}<label class="consent"><input type="checkbox" name="consent" {{5}}>Подтверждаю сохранение доступных боту переписок на сервере ThreadDock. Каждый пользователь видит только свои данные.</label><label class="setting-row"><span>{{6}}<small>Избранное не удаляется автоматически.</small></span><select name="retention_days">{{7}}</select></label>{{8}}<label class="setting-row"><span>{{9}}<small>Нужно отдельное право Telegram.</small></span><select name="read_mode">{{10}}</select></label><div class="setting-footer"><button class="button primary">{{11}}</button></div></form><form class="panel setting-card" id="notification-form"><h2>{{12}}</h2><p class="description">Бот сообщает о событиях в личном чате. Серии удалений объединяются, текст по умолчанию скрыт.</p>{{13}}{{14}}{{15}}{{16}}{{17}}{{18}}<div class="two-fields"><label class="field">Тишина с<input type="time" name="quiet_start" value="{{19}}"></label><label class="field">До<input type="time" name="quiet_end" value="{{20}}"></label></div><label class="field">Смещение часового пояса, минут<input type="number" min="-840" max="840" name="utc_offset" value="{{21}}"></label><div class="setting-footer"><button class="button primary">{{22}}</button></div></form><form class="panel setting-card" id="keyword-form"><h2>{{23}}</h2><p class="description">Пиши слова через запятую. Исключение отменяет срабатывание для всего сообщения.</p><label class="field">Отслеживать<textarea name="keywords">{{24}}</textarea></label><label class="field">Слова-исключения<textarea name="exclusions">{{25}}</textarea></label>{{26}}<div class="setting-footer"><button class="button primary">{{27}}</button></div></form><section class="panel setting-card"><h2>{{28}}</h2><p class="description">PIN блокирует приложение и API. Биометрия хранит ключ в защищённом хранилище Telegram. Это не сквозное шифрование базы.</p><label class="setting-row"><span>{{29}}</span><select id="language"><option value="ru" {{30}}>Русский</option><option value="en" {{31}}>English</option></select></label><label class="setting-row"><span>{{32}}</span><select id="theme">{{33}}</select></label><label class="setting-row"><span>{{34}}</span><select id="auto-lock">{{35}}</select></label><div class="setting-footer"><button class="button" data-action="pin">{{36}}{{37}}</button><button class="button subtle" data-action="enroll-bio">{{38}}</button></div></section><section class="panel setting-card"><h2>{{39}}</h2><p class="description">Личная закрытая группа с темами: только ты и бот. Здесь сохраняются файлы, в том числе слишком большие для просмотра в приложении. У каждого собеседника своя тема.</p><div class="status-line"><span class="status-light {{40}}"></span>{{41}}</div><div class="setting-footer"><button class="button" data-action="vault-request">{{42}}</button><button class="button subtle" data-action="vault-id">По ID</button></div></section><section class="panel setting-card danger-card"><h2>{{43}}</h2><p class="description">Экспорт доступен в JSON, CSV, Markdown и HTML. Удаление стирает базу, версии и локальные файлы. Копии в Telegram-группе удаляются отдельно через сам Telegram.</p><div class="setting-footer"><button class="button" data-action="export">{{44}}</button><button class="button danger" data-action="delete-all">{{45}}</button></div></section>{{46}}</div>',
+    '<div class="settings-grid"><form class="panel setting-card" id="storage-form"><h2>{{0}}</h2><p class="description">Сохраняются разрешённые переписки, которые бот получает после подключения. История до подключения недоступна.</p><div class="status-line"><span class="status-light {{1}}"></span>{{2}}</div>{{3}}{{4}}<label class="consent"><input type="checkbox" name="consent" {{5}}>Подтверждаю сохранение доступных боту переписок на сервере ThreadDock. Каждый пользователь видит только свои данные.</label><label class="setting-row"><span>{{6}}<small>Избранное не удаляется автоматически. Статистика сохраняется после очистки.</small></span><select name="retention_days">{{7}}</select></label>{{8}}<label class="setting-row"><span>{{9}}<small>Нужно отдельное право Telegram.</small></span><select name="read_mode">{{10}}</select></label><div class="setting-footer"><button class="button primary">{{11}}</button></div></form><form class="panel setting-card" id="notification-form"><h2>{{12}}</h2><p class="description">Бот сообщает о событиях в личном чате. Серии удалений объединяются, текст по умолчанию скрыт.</p>{{13}}{{14}}{{15}}{{16}}{{17}}{{18}}<div class="two-fields"><label class="field">Тишина с<input type="time" name="quiet_start" value="{{19}}"></label><label class="field">До<input type="time" name="quiet_end" value="{{20}}"></label></div><label class="field">Смещение часового пояса, минут<input type="number" min="-840" max="840" name="utc_offset" value="{{21}}"></label><div class="setting-footer"><button class="button primary">{{22}}</button></div></form><form class="panel setting-card" id="keyword-form"><h2>{{23}}</h2><p class="description">Пиши слова через запятую. Исключение отменяет срабатывание для всего сообщения.</p><label class="field">Отслеживать<textarea name="keywords">{{24}}</textarea></label><label class="field">Слова-исключения<textarea name="exclusions">{{25}}</textarea></label>{{26}}<div class="setting-footer"><button class="button primary">{{27}}</button></div></form><section class="panel setting-card"><h2>{{28}}</h2><p class="description">PIN блокирует приложение и API. Биометрия хранит ключ в защищённом хранилище Telegram. Это не сквозное шифрование базы.</p><label class="setting-row"><span>{{29}}</span><select id="language"><option value="ru" {{30}}>Русский</option><option value="en" {{31}}>English</option></select></label><label class="setting-row"><span>{{32}}</span><select id="theme">{{33}}</select></label><label class="setting-row"><span>{{34}}</span><select id="auto-lock">{{35}}</select></label><div class="setting-footer"><button class="button" data-action="pin">{{36}}{{37}}</button><button class="button subtle" data-action="enroll-bio">{{38}}</button></div></section><section class="panel setting-card"><h2>{{39}}</h2><p class="description">Личная закрытая группа с темами: только ты и бот. Здесь сохраняются файлы, в том числе слишком большие для просмотра в приложении. У каждого собеседника своя тема.</p><div class="status-line"><span class="status-light {{40}}"></span>{{41}}</div><div class="setting-footer"><button class="button" data-action="vault-request">{{42}}</button><button class="button subtle" data-action="vault-id">По ID</button></div></section><section class="panel setting-card danger-card"><h2>{{43}}</h2><p class="description">Экспорт ZIP содержит записи, сохранённые вложения и манифест. Бот удаляет записи и локальные файлы и ставит известные копии в хранилище в очередь на удаление. Резервные копии, скачанные экспорты и остатки в Telegram удаляются вручную.</p><div class="setting-footer"><button class="button" data-action="export">{{44}}</button><button class="button" data-action="delete-history">{{47}}</button><button class="button danger" data-action="delete-all">{{45}}</button></div></section>{{46}}</div>',
   "CLOSE": "Закрыть",
   "ORIGINAL": "Оригинал",
   "VERSION_PREFIX": "Версия ",
@@ -219,14 +252,16 @@ export const COPY = {
     '<form id="pin-form"><p>PIN содержит 6–12 цифр. При смене PIN другие сессии и биометрические ключи будут отозваны.</p>{{0}}<label class="field">Новый PIN<input type="password" inputmode="numeric" name="new_pin" autocomplete="off" minlength="6" maxlength="12" {{1}}></label><label class="field">Повтор нового PIN<input type="password" inputmode="numeric" name="confirm_pin" autocomplete="off" minlength="6" maxlength="12"></label><p>{{2}}</p><button class="button primary">{{3}}</button></form>',
   "PERMANENT_DELETION": "Удаление без восстановления",
   "DELETE_ACCOUNT_HINT":
-    "Будут удалены все твои переписки, версии, события, локальные файлы, PIN и сессии. Архив выключится.",
-  "DELETE_MESSAGE_HINT": "Запись и история её версий будут удалены из архива.",
-  "DELETE_CHAT_HINT": "Будет удалена выбранная история переписки.",
+    "Будут удалены все твои переписки, версии, события, локальные файлы, статистика, PIN и сессии. Архив выключится.",
+  "DELETE_MESSAGE_HINT":
+    "Запись и история её версий будут удалены из архива. Статистика сохранится.",
+  "DELETE_CHAT_HINT":
+    "Будет удалена выбранная история переписки. Статистика сохранится.",
   "DELETE_CHAT_OPTIONS":
     '<label class="field">Период<select name="days"><option value="0">Вся история</option><option value="1">Последние 24 часа</option><option value="3">Последние 3 дня</option></select></label><label class="consent"><input type="checkbox" name="exclude">Также исключить чат из дальнейшего сохранения</label>',
   "CONTINUE": "Продолжить",
   "DELETEMODAL_TEMPLATE":
-    '<form id="delete-form" data-all="{{0}}" data-message="{{1}}"><p>{{2}} Копии в Telegram-группе остаются и удаляются отдельно через Telegram.</p>{{3}}<label class="field">Введи УДАЛИТЬ<input name="confirmation" autocomplete="off" required pattern="УДАЛИТЬ"></label><button class="button danger" type="submit">{{4}}</button></form>',
+    '<form id="delete-form" data-kind="{{0}}" data-message="{{1}}"><p>{{2}}</p>{{5}}{{3}}<label class="field">Введи УДАЛИТЬ<input name="confirmation" autocomplete="off" required pattern="УДАЛИТЬ"></label><button class="button danger" type="submit">{{4}}</button></form>',
   "REINCLUDE_CHAT":
     '<label class="setting-row">Снова включить сохранение<input type="checkbox" name="include"></label>',
   "CHATSETTINGS_TEMPLATE":
@@ -237,6 +272,14 @@ export const COPY = {
   "REMOTE_FILE": "<p>Этот файл можно получить в Telegram.</p>",
   "PREVIEWMEDIA_TEMPLATE":
     '<button class="button primary" data-action="send-media" data-id="{{0}}">{{1}}</button><button class="button" data-action="retry-media" data-id="{{2}}">Повторить сохранение</button>',
+  "RETRY_MEDIA_SAVE":
+    '<button class="button" data-action="retry-media" data-id="{{0}}">{{1}}</button>',
+  "RETRY_SAVING": "Повторить сохранение",
+  "EPHEMERAL_COPY_MISSING": "Для отправки нужна сохранённая копия.",
+  "SEND_RETRY_TITLE": "Повторная отправка",
+  "OPEN_BOT_CHAT": "Открыть чат с ботом",
+  "SEND_RETRY_FORM":
+    '<form id="send-retry-form" data-media="{{0}}" data-task="{{1}}" data-created="{{2}}"><p>Telegram не подтвердил предыдущую отправку. Проверь личный чат с ботом.</p>{{3}}<label class="consent"><input type="checkbox" name="checked_chat" required>Я проверил чат, файла там нет.</label><button class="button primary" type="submit">Отправить ещё раз</button></form>',
   "DONE": "Готово",
   "DELIVERY_IS_UNCERTAIN_CHECK_THE_CHAT_BEFORE_RETRYING":
     "Отправка не подтверждена. Проверь чат перед повтором.",
@@ -377,7 +420,8 @@ export const translations = {
   "Активность по дням": "Daily activity",
   "Когда вы общаетесь": "Activity heatmap",
   "Как быстро удаляют": "Time before deletion",
-  "Частые слова в удалённом": "Frequent words in deleted messages",
+  "Частые слова в сохранившихся удалённых сообщениях":
+    "Frequent words in retained deleted messages",
   "Входящие": "Incoming",
   "Исходящие": "Outgoing",
   "Медианное время ответа": "Median reply time",

@@ -3,7 +3,7 @@ import time
 from aiogram import F, Router
 from aiogram.dispatcher.event.bases import UNHANDLED
 from aiogram.filters import Command
-from aiogram.types import BusinessMessagesDeleted, CallbackQuery, Message, ReplyKeyboardRemove
+from aiogram.types import BusinessMessagesDeleted, CallbackQuery, Message, ReplyKeyboardRemove, Update
 
 from archive.analytics import statistics_for
 from archive.exports import FORMATS
@@ -20,15 +20,22 @@ async def author_policy(message: Message, app: Application):
     excluded = (message.text or "").split()[0].split("@")[0] == "/optout"
     owners = app.archive.repository.set_author_optout(message.from_user.id, excluded)
     for owner_id in owners:
-        app.archive.cleanup_owner_blobs(owner_id)
+        app.archive.invalidate_export(owner_id)
+    for owner_id in owners:
+        async with app.archive.owner_lock(owner_id):
+            app.archive.cleanup_owner_blobs(owner_id)
     await message.answer(T.ARCHIVE_AUTHOR_OPTOUT if excluded else T.ARCHIVE_AUTHOR_OPTIN)
 
 
 @router.business_message()
-@router.edited_business_message()
-async def archive_message(message: Message, app: Application):
-    await app.archive.capture(message)
+async def archive_message(message: Message, app: Application, event_update: Update):
+    await app.archive.capture(message, update_id=event_update.update_id)
     return UNHANDLED
+
+
+@router.edited_business_message()
+async def archive_edit(message: Message, app: Application, event_update: Update):
+    await app.archive.capture(message, edited=True, update_id=event_update.update_id)
 
 
 @router.deleted_business_messages()

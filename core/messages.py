@@ -20,7 +20,10 @@ def has_media(message) -> bool:
 
 def is_disappearing(message) -> bool:
     # These flags are not present on every Bot API update. Spoilers do not imply TTL.
-    values = [message, *(getattr(message, field, None) for field in MEDIA_FIELDS)]
+    values = [message]
+    for field in MEDIA_FIELDS:
+        attachment = getattr(message, field, None)
+        values.extend(attachment if isinstance(attachment, list) else [attachment])
     return any(
         getattr(value, "ttl_seconds", 0) or getattr(value, "is_view_once", False)
         for value in values

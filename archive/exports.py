@@ -5,9 +5,12 @@ import csv
 import html
 import io
 import json
+from contextlib import ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
+from zipfile import ZIP_STORED, ZipFile
 
+from archive.content import clean_filename
 from archive.repository import RETAINED_MESSAGE
 from core import texts as T
 
@@ -19,7 +22,8 @@ def safe_csv(value) -> str:
     return "'" + text if text.lstrip().startswith(("=", "+", "-", "@", "\t", "\r")) else text
 
 
-def _record(message, version, chat) -> dict:
+def _record(message, version, chat, media: dict) -> dict:
+    payload = json.loads(version["payload"]) if version else {}
     return {
         "chat": chat["title"],
         "chat_id": chat["telegram_id"],
@@ -30,6 +34,9 @@ def _record(message, version, chat) -> dict:
         "outgoing": bool(message["outgoing"]),
         "favorite": bool(message["favorite"]),
         "text": version["body"] if version else message["body"],
+        "attachments": [
+            media[key] for item in payload.get("media", []) if (key := (item["kind"], item["unique_id"])) in media
+        ],
     }
 
 
@@ -38,9 +45,12 @@ def _render(record: dict, format_name: str) -> str:
         return json.dumps(record, ensure_ascii=False)
     if format_name == "csv":
         buffer = io.StringIO(newline="")
-        csv.writer(buffer).writerow(safe_csv(value) for value in record.values())
+        csv.writer(buffer).writerow(
+            safe_csv(json.dumps(value, ensure_ascii=False) if isinstance(value, list) else value)
+            for value in record.values()
+        )
         return buffer.getvalue()
-    date = datetime.fromtimestamp(record["sent_at"], UTC).isoformat()
+    date = datetime.fromtimestamp(record["changed_at"] or record["sent_at"], UTC).isoformat()
     direction = "→" if record["outgoing"] else "←"
     state = " · DELETED" if record["deleted_at"] else ""
     if format_name == "md":
@@ -79,11 +89,19 @@ async def write_export(
         for index, message in enumerate(messages):
             chat = repository.chat(owner_id, message["chat_id"])
             versions = repository.db.execute(
-                "SELECT changed_at,body FROM archive_versions WHERE owner_id=? AND message_id=? ORDER BY changed_at,id",
+                """SELECT changed_at,body,payload FROM archive_versions WHERE owner_id=? AND message_id=?
+                ORDER BY changed_at,coalesce(json_extract(payload,'$.archive_edit'),1),id""",
                 (owner_id, message["id"]),
             ).fetchall() or [None]
+            media = {
+                (row["kind"], row["unique_id"]): row["id"]
+                for row in repository.db.execute(
+                    "SELECT id,kind,unique_id FROM archive_media WHERE owner_id=? AND message_id=?",
+                    (owner_id, message["id"]),
+                )
+            }
             for version in versions:
-                record = _record(message, version, chat)
+                record = _record(message, version, chat, media)
                 rendered = _render(record, format_name)
                 if file is None or size + len(rendered.encode()) > max_part_bytes:
                     close()
@@ -120,4 +138,80 @@ async def write_export(
             files.append(path)
     finally:
         close()
+    return files
+
+
+def bundle_export(records: list[Path], attachments: list[dict], limit: int, stopped) -> list[Path]:
+    """Write independent ZIP parts, each with its own manifest."""
+    files = []
+    overhead = 65_536
+    capacity = limit - overhead
+    if capacity <= 0:
+        raise ValueError("ZIP export limit is too small")
+    manifest = []
+    content_size = 0
+
+    with ExitStack() as stack:
+        archive = None
+
+        def next_part():
+            nonlocal archive, content_size
+            if archive:
+                archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+                stack.close()
+            manifest.clear()
+            content_size = 0
+            target = records[0].parent / f"threaddock-{len(files) + 1:03}.zip"
+            files.append(target)
+            archive = stack.enter_context(ZipFile(target, "w", compression=ZIP_STORED))
+
+        def ensure_space(size):
+            if stopped.is_set():
+                raise InterruptedError("Export stopped")
+            if archive is None or content_size + size > capacity or len(manifest) >= 15:
+                next_part()
+
+        for record in records:
+            size = record.stat().st_size
+            ensure_space(size)
+            archive.write(record, f"records/{record.name}")
+            content_size += size
+        for item in attachments:
+            item = dict(item)
+            path = item.pop("path")
+            name = f"attachments/{item['id']}/{clean_filename(item['filename'], 'attachment')}"
+            if path is None:
+                ensure_space(0)
+                manifest.append(item)
+                continue
+            try:
+                remaining = path.stat().st_size
+                source = path.open("rb")
+            except OSError:
+                ensure_space(0)
+                manifest.append(item | {"status": "missing_local_file"})
+                continue
+            total = remaining
+            with source:
+                while remaining or total == 0:
+                    size = min(remaining, capacity)
+                    ensure_space(size)
+                    offset = total - remaining
+                    entry = name if size == total else f"{name}.part-{offset:012}"
+                    with archive.open(entry, "w", force_zip64=True) as destination:
+                        count = size
+                        while count:
+                            if stopped.is_set():
+                                raise InterruptedError("Export stopped")
+                            block = source.read(min(count, 1024 * 1024))
+                            if not block:
+                                raise OSError("Archive file truncated during export")
+                            destination.write(block)
+                            count -= len(block)
+                    manifest.append(item | {"entry": entry, "offset": offset, "bytes": size, "total_bytes": total})
+                    content_size += size
+                    remaining -= size
+                    if total == 0:
+                        break
+        archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
     return files

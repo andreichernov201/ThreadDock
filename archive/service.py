@@ -4,10 +4,12 @@ import asyncio
 import html
 import json
 import logging
+import os
 import shutil
 import time
 import uuid
 from pathlib import Path
+from threading import Event
 
 from aiogram.exceptions import (
     TelegramAPIError,
@@ -20,9 +22,9 @@ from aiogram.exceptions import (
 from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
 
 from archive.config import ArchiveSettings
-from archive.content import message_payload
-from archive.exports import write_export
-from archive.repository import ArchiveRepository
+from archive.content import message_payload, visible_content
+from archive.exports import bundle_export, write_export
+from archive.repository import RETAINED_MESSAGE, ArchiveRepository
 from core import texts as T
 from core.errors import MediaError
 from services.processes import remove_directory
@@ -67,6 +69,9 @@ class ArchiveService:
         self.task: asyncio.Task | None = None
         self._locks: dict[int, asyncio.Lock] = {}
         self._last_maintenance = 0.0
+        self._reserved_bytes = 0
+        self._media_in_flight: set[str] = set()
+        self._active_exports: dict[int, Event] = {}
 
     def owner_lock(self, owner_id: int) -> asyncio.Lock:
         return self._locks.setdefault(owner_id, asyncio.Lock())
@@ -92,7 +97,7 @@ class ArchiveService:
             self.connection_changed(connection)
         return dict(info) if info and info["enabled"] else None
 
-    async def capture(self, message: Message, *, manual_reply: bool = False) -> None:
+    async def capture(self, message: Message, *, edited: bool = False, update_id: int | None = None) -> None:
         if (
             not message.business_connection_id
             or message.chat.type != "private"
@@ -100,7 +105,7 @@ class ArchiveService:
             or (self.settings.business_chats and message.chat.id not in self.settings.business_chats)
         ):
             return
-        if message.sender_business_bot and not manual_reply:
+        if message.sender_business_bot:
             return
         info = await self.ensure_connection(message.business_connection_id)
         if not info:
@@ -116,8 +121,14 @@ class ArchiveService:
             or message.chat.title
             or str(message.chat.id)
         )
-        for item in [message.reply_to_message, message] if message.reply_to_message else [message]:
-            if item is None or item.chat.id != message.chat.id or (item.sender_business_bot and not manual_reply):
+        for item in (message, message.reply_to_message):
+            if (
+                item is None
+                or item.chat.id != message.chat.id
+                or item.sender_business_bot
+                or item.message_id <= 0
+                or item.business_connection_id not in {None, message.business_connection_id}
+            ):
                 continue
             if self.repository.author_excluded(item.from_user.id if item.from_user else None):
                 continue
@@ -130,11 +141,13 @@ class ArchiveService:
                 telegram_id=item.message_id,
                 sent_at=item.date.timestamp(),
                 changed_at=(item.edit_date or item.date).timestamp(),
-                outgoing=manual_reply or bool(item.from_user and item.from_user.id == owner_id),
+                outgoing=bool(item.from_user and item.from_user.id == owner_id),
                 sender_id=item.from_user.id if item.from_user else None,
                 media_group=item.media_group_id,
                 payload=message_payload(item),
                 captured_from_reply=item is message.reply_to_message,
+                edited_update=edited if item is message else item.edit_date is not None,
+                update_id=update_id if item is message else None,
             )
 
     async def deleted(self, event) -> None:
@@ -150,7 +163,12 @@ class ArchiveService:
                 event.chat.id
             )
             self.repository.delete_messages(
-                info["owner_id"], event.business_connection_id, event.chat.id, event.message_ids, title
+                info["owner_id"],
+                event.business_connection_id,
+                event.chat.id,
+                event.message_ids,
+                title,
+                event.chat.username or "",
             )
 
     def web_button(self, text: str = T.ARCHIVE_SERVICE_OPEN_ARCHIVE, *, chat_id: int = 0, message_id: int = 0):
@@ -183,7 +201,7 @@ class ArchiveService:
         cancelled = self.repository.retire_caption_downloads()
         logger.info("archive_policy retired_blobs=%s cancelled_caption_jobs=%s", len(removed), cancelled)
         self.repository.recover()
-        self.task = asyncio.create_task(self._worker(), name="archive-outbox")
+        self.task = asyncio.create_task(self._run_workers(), name="archive-outbox")
 
     async def close(self) -> None:
         self.stopping.set()
@@ -200,17 +218,78 @@ class ArchiveService:
         except TimeoutError:
             pass
 
-    async def _worker(self):
+    async def _run_workers(self):
+        async with asyncio.TaskGroup() as group:
+            group.create_task(self._worker("urgent"), name="archive-urgent-media")
+            group.create_task(self._vault_cleanup(), name="archive-vault-cleanup")
+            for index in range(2):
+                group.create_task(self._worker("standard"), name=f"archive-worker-{index + 1}")
+
+    async def _worker(self, lane: str):
         while not self.stopping.is_set():
             if time.time() - self._last_maintenance > 60:
                 self.maintain()
                 self._last_maintenance = time.time()
-            task = self.repository.claim()
+            busy = {owner for owner, lock in self._locks.items() if lock.locked()} if lane == "standard" else set()
+            task = self.repository.claim(lane=lane, busy_owners=busy)
             if task is None:
-                await self._idle(0.5)
+                await self._idle(0.1 if lane == "urgent" else 0.25)
                 continue
-            async with self.owner_lock(task["owner_id"]):
+            if lane == "urgent":
                 await self._process(task)
+            else:
+                async with self.owner_lock(task["owner_id"]):
+                    await self._process(task)
+
+    async def _vault_cleanup(self):
+        while not self.stopping.is_set():
+            row = self.repository.db.execute(
+                """SELECT * FROM archive_vault_copies WHERE state='pending' AND available_at<=?
+                ORDER BY available_at,chat_id,telegram_id LIMIT 1""",
+                (time.time(),),
+            ).fetchone()
+            if row is None:
+                await self._idle(1)
+                continue
+            key = row["chat_id"], row["telegram_id"]
+            try:
+                async with asyncio.timeout(30):
+                    await self.bot.delete_message(*key)
+            except TelegramRetryAfter as error:
+                self._delay_vault_cleanup(key, error.retry_after + 1)
+            except (TelegramNetworkError, TelegramServerError, TimeoutError):
+                if row["attempts"] < 4:
+                    self._delay_vault_cleanup(key, 2 ** row["attempts"])
+                else:
+                    self._mark_vault_manual(key, "network")
+            except TelegramBadRequest as error:
+                if "message to delete not found" in error.message.lower():
+                    self._finish_vault_cleanup(key)
+                else:
+                    self._mark_vault_manual(key, "rejected")
+            except TelegramAPIError:
+                self._mark_vault_manual(key, "forbidden")
+            else:
+                self._finish_vault_cleanup(key)
+
+    def _delay_vault_cleanup(self, key: tuple[int, int], delay: float):
+        with self.repository.db:
+            self.repository.db.execute(
+                "UPDATE archive_vault_copies SET attempts=attempts+1,available_at=? WHERE chat_id=? AND telegram_id=?",
+                (time.time() + delay, *key),
+            )
+
+    def _mark_vault_manual(self, key: tuple[int, int], code: str):
+        with self.repository.db:
+            self.repository.db.execute(
+                "UPDATE archive_vault_copies SET state='manual' WHERE chat_id=? AND telegram_id=?",
+                key,
+            )
+        self.repository.record_error(f"vault_cleanup:{code}")
+
+    def _finish_vault_cleanup(self, key: tuple[int, int]):
+        with self.repository.db:
+            self.repository.db.execute("DELETE FROM archive_vault_copies WHERE chat_id=? AND telegram_id=?", key)
 
     async def _process(self, task: dict):
         identifier, owner_id = task["id"], task["owner_id"]
@@ -222,7 +301,7 @@ class ArchiveService:
                 return
             if (
                 (not owner["enabled"] or owner["paused"])
-                and task["kind"] in {"notify", "read", "sync_copies", "media"}
+                and task["kind"] in {"notify", "read", "sync_copies", "media", "prefetch"}
                 and not task["payload"].get("explicit")
             ):
                 self.repository.task_status(identifier, "done", code="paused")
@@ -235,8 +314,16 @@ class ArchiveService:
                         self.repository.task_status(identifier, "pending", delay=delay)
                         return
                     await self._notify(task, owner)
-                elif task["kind"] == "media":
-                    await self._save_media(task, owner)
+                elif task["kind"] in {"media", "prefetch"}:
+                    media_id = task["payload"]["media_id"]
+                    if media_id in self._media_in_flight:
+                        self.repository.task_status(identifier, "pending", delay=0.5)
+                        return
+                    self._media_in_flight.add(media_id)
+                    try:
+                        await self._save_media(task, owner)
+                    finally:
+                        self._media_in_flight.remove(media_id)
                 elif task["kind"] == "sync_copies":
                     await self._sync_copies(task, owner)
                 elif task["kind"] == "read":
@@ -246,7 +333,10 @@ class ArchiveService:
                 elif task["kind"] == "export":
                     result = await self._export(task, owner)
                 elif task["kind"] == "reply":
-                    result = await self._reply(task, owner)
+                    self.repository.task_status(identifier, "failed", code="reply_retired")
+                    if upload := task["payload"].get("upload"):
+                        self.safe_path(upload, self.uploads).unlink(missing_ok=True)
+                    return
                 elif task["kind"] == "vault_prompt":
                     await self._vault_prompt(task, owner)
                 else:
@@ -274,6 +364,12 @@ class ArchiveService:
             status = "uncertain" if current and current["status"] in {"sending", "uncertain"} else "pending"
             if status == "pending" and task["attempts"] >= 3:
                 status = "failed"
+            if status != "pending":
+                self.repository.record_error(f"{task['kind']}:telegram_network:{status}")
+            if status == "failed" and task["kind"] == "media":
+                media = self.repository.media(owner_id, task["payload"]["media_id"])
+                if media and not media["local_path"]:
+                    self._media_status(media, "unavailable", False)
             self.repository.task_status(identifier, status, code="telegram_network", delay=5 * task["attempts"])
         except Exception as error:
             code = error.code if isinstance(error, MediaError) else type(error).__name__
@@ -287,7 +383,7 @@ class ArchiveService:
         event_ids = task["payload"]["event_ids"]
         rows = [
             self.repository.db.execute(
-                "SELECT e.*,c.title,c.muted,COALESCE(v.body,m.body) AS body FROM archive_events e JOIN archive_chats c ON c.id=e.chat_id LEFT JOIN archive_messages m ON m.id=e.message_id LEFT JOIN archive_versions v ON v.id=e.version_id AND v.owner_id=e.owner_id WHERE e.owner_id=? AND e.id=?",
+                "SELECT e.*,c.title,c.muted,COALESCE(v.body,m.body) AS body,v.payload AS version_payload FROM archive_events e JOIN archive_chats c ON c.id=e.chat_id LEFT JOIN archive_messages m ON m.id=e.message_id LEFT JOIN archive_versions v ON v.id=e.version_id AND v.owner_id=e.owner_id WHERE e.owner_id=? AND e.id=?",
                 (owner["owner_id"], event),
             ).fetchone()
             for event in event_ids
@@ -331,7 +427,8 @@ class ArchiveService:
             "unknown_deleted": T.ARCHIVE_SERVICE_UNKNOWN_DELETION,
             "keyword": T.ARCHIVE_SERVICE_KEYWORD_MATCH,
             "profile": T.ARCHIVE_SERVICE_PROFILE_CHANGED,
-            "reply_media": T.ARCHIVE_REASON_REPLY_MEDIA,
+            "reply_media": T.ARCHIVE_SERVICE_EPHEMERAL,
+            "protected_media": T.ARCHIVE_SERVICE_PROTECTED_ATTACHMENT,
         }
         title = (
             labels.get(rows[0]["kind"], T.ARCHIVE_SERVICE_ARCHIVE_EVENT)
@@ -342,18 +439,39 @@ class ArchiveService:
             title=html.escape(title), chat=html.escape(rows[0]["title"])
         )
         reason = {
-            "edited": T.ARCHIVE_REASON_EDITED,
             "deleted": T.ARCHIVE_REASON_DELETED,
             "unknown_deleted": T.ARCHIVE_REASON_UNKNOWN,
             "keyword": T.ARCHIVE_REASON_KEYWORD,
             "profile": T.ARCHIVE_REASON_PROFILE,
             "reply_media": T.ARCHIVE_REASON_REPLY_MEDIA,
+            "protected_media": T.ARCHIVE_REASON_PROTECTED,
         }.get(rows[0]["kind"], "")
         if len(rows) > 1:
             reason = T.ARCHIVE_REASON_DELETED_BATCH.format(count=len(rows))
         if reason:
             text += "\n" + html.escape(reason)
-        if not owner["hide_content"]:
+        if not owner["hide_content"] and rows[0]["kind"] == "edited":
+            row = rows[0]
+            previous = self.repository.previous_version(owner["owner_id"], row["message_id"], row["version_id"])
+            start = 0
+            if previous and previous["body"] != row["body"]:
+                common = os.path.commonprefix((previous["body"].strip(), row["body"].strip()))
+                start = max(0, len(common) - 80)
+            before = self._edit_preview(previous, start) if previous else T.ARCHIVE_SERVICE_PREVIOUS_MISSING
+            text += T.ARCHIVE_SERVICE_EDIT_COMPARISON.format(
+                before=html.escape(before),
+                after=html.escape(self._edit_preview(row, start)),
+            )
+            if (
+                previous
+                and row["version_payload"]
+                and (
+                    visible_content(json.loads(previous["payload"]))[1]
+                    != visible_content(json.loads(row["version_payload"]))[1]
+                )
+            ):
+                text += "\n" + T.ARCHIVE_SERVICE_ATTACHMENT_CHANGED
+        elif not owner["hide_content"]:
             previews = [
                 html.escape((row["body"] or "").strip()[:500] or T.ARCHIVE_SERVICE_EMPTY_PREVIEW) for row in rows[:4]
             ]
@@ -363,7 +481,7 @@ class ArchiveService:
                 T.ARCHIVE_REASON_MATCHES.format(words=", ".join(json.loads(rows[0]["payload"])["matches"]))
             )
         buttons = []
-        if self.config.public_url:
+        if self.config.public_url and rows[0]["kind"] != "keyword":
             buttons.append(
                 [
                     InlineKeyboardButton(
@@ -399,39 +517,57 @@ class ArchiveService:
         for job_id in batch_ids[1:]:
             self.repository.task_status(job_id, "done")
 
+    @staticmethod
+    def _edit_preview(version, start: int) -> str:
+        payload = json.loads(
+            (version["version_payload"] if "version_payload" in version.keys() else version["payload"]) or "{}"
+        )
+        body = (version["body"] or "").strip()
+        names = ", ".join(item["filename"] for item in payload.get("media", []))
+        excerpt = ("…" if start else "") + body[start : start + 320] + ("…" if len(body) > start + 320 else "")
+        preview = "\n".join(filter(None, (excerpt, names[:120])))
+        return preview or T.ARCHIVE_SERVICE_EMPTY_PREVIEW
+
     async def _save_media(self, task: dict, owner: dict):
-        media = self.repository.media(owner["owner_id"], task["payload"]["media_id"])
+        prefetch = task["kind"] == "prefetch"
+        lookup = self.repository.staged_media if prefetch else self.repository.media
+        media = lookup(owner["owner_id"], task["payload"]["media_id"])
         if not media or media["kind"] not in owner["media_types"]:
             return
         if media["size"] <= self.config.media_download_bytes and not media["local_path"]:
             stored_bytes = self.repository.db.execute(
-                "SELECT coalesce(sum(size),0) FROM archive_media WHERE status='ready'"
+                "SELECT coalesce(sum(size),0) FROM archive_media WHERE local_path IS NOT NULL"
             ).fetchone()[0]
             free = shutil.disk_usage(self.root).free
-            if (
-                stored_bytes + media["size"] < self.config.storage_bytes
-                and free - media["size"] >= self.settings.min_free_bytes
-            ):
+            budget = min(
+                self.config.media_download_bytes,
+                self.config.storage_bytes - stored_bytes - self._reserved_bytes,
+                free - self.settings.min_free_bytes - self._reserved_bytes,
+            )
+            reserved = min(budget, media["size"] or self.config.media_download_bytes)
+            if budget > 0 and budget >= media["size"]:
                 folder = self.blobs / str(owner["owner_id"])
                 folder.mkdir(parents=True, exist_ok=True)
                 path = folder / media["id"]
                 partial = path.with_suffix(".part")
+                self._reserved_bytes += reserved
                 try:
                     with partial.open("wb") as output:
                         await self.bot.download(
                             media["file_id"],
-                            destination=LimitedWriter(
-                                output, min(self.config.media_download_bytes, self.config.storage_bytes - stored_bytes)
-                            ),
-                            timeout=60,
+                            destination=LimitedWriter(output, reserved),
+                            timeout=30 if task["payload"].get("urgent") else 60,
                         )
-                    # The author may have opted out while getFile was in flight.
-                    if self.repository.media(owner["owner_id"], media["id"]) is None:
+                    if (
+                        self.repository.staged_media(owner["owner_id"], media["id"]) is None
+                        and self.repository.media(owner["owner_id"], media["id"]) is None
+                    ):
                         return
                     partial.replace(path)
                     with self.repository.db:
                         self.repository.db.execute(
-                            "UPDATE archive_media SET local_path=?,size=?,status='ready' WHERE owner_id=? AND id=?",
+                            """UPDATE archive_media SET local_path=?,size=?,status=CASE WHEN status='staged' THEN status
+                            ELSE 'ready' END WHERE owner_id=? AND id=?""",
                             (
                                 path.relative_to(self.root).as_posix(),
                                 path.stat().st_size,
@@ -439,29 +575,37 @@ class ArchiveService:
                                 media["id"],
                             ),
                         )
-                except (TelegramBadRequest, TelegramForbiddenError, MediaError, OSError):
-                    partial.unlink(missing_ok=True)
-                    with self.repository.db:
-                        self.repository.db.execute(
-                            "UPDATE archive_media SET status=? WHERE owner_id=? AND id=?",
-                            ("protected" if media["protected"] else "remote", owner["owner_id"], media["id"]),
-                        )
+                except (TelegramBadRequest, TelegramForbiddenError, MediaError, OSError) as error:
+                    code = "get_file_rejected" if isinstance(error, TelegramAPIError) else type(error).__name__
+                    self.repository.record_error(f"archive_media:{code}")
+                    self._media_status(media, "protected" if media["protected"] else "remote", prefetch)
                 finally:
+                    self._reserved_bytes -= reserved
                     partial.unlink(missing_ok=True)
             else:
-                with self.repository.db:
-                    self.repository.db.execute(
-                        "UPDATE archive_media SET status='storage_full' WHERE owner_id=? AND id=?",
-                        (owner["owner_id"], media["id"]),
-                    )
+                self._media_status(media, "storage_full", prefetch)
         elif media["size"] > self.config.media_download_bytes:
+            self._media_status(media, "remote", prefetch)
+        if prefetch:
+            return
+        if media["local_path"]:
+            self._media_status(media, "ready", prefetch)
+        if (
+            owner["vault_chat_id"]
+            and not media["vault_message_id"]
+            and not media["protected"]
+            and not media["ephemeral"]
+        ):
+            if current := self.repository.media(owner["owner_id"], media["id"]):
+                await self._copy_to_vault(task, owner, current)
+
+    def _media_status(self, media: dict, status: str, prefetch: bool):
+        if not prefetch:
             with self.repository.db:
                 self.repository.db.execute(
-                    "UPDATE archive_media SET status='remote' WHERE owner_id=? AND id=?",
-                    (owner["owner_id"], media["id"]),
+                    "UPDATE archive_media SET status=? WHERE owner_id=? AND id=?",
+                    (status, media["owner_id"], media["id"]),
                 )
-        if owner["vault_chat_id"] and not media["vault_message_id"] and not media["protected"]:
-            await self._copy_to_vault(task, owner, media)
 
     async def _copy_to_vault(self, task: dict, owner: dict, media: dict):
         vault = await self.bot.get_chat(owner["vault_chat_id"])
@@ -482,13 +626,27 @@ class ArchiveService:
                     (topic_id, owner["owner_id"], media["chat_id"]),
                 )
         message = self.repository.message(owner["owner_id"], media["message_id"])
+        current = self.repository.media(owner["owner_id"], media["id"])
+        if message is None or current is None or current["protected"] or current["ephemeral"]:
+            return
         caption = self._copy_caption(message)
         self.repository.task_status(task["id"], "sending")
-        sent = await self._send_file(owner["vault_chat_id"], media, caption=caption, topic_id=topic_id)
+        sent = await self._send_file(owner["vault_chat_id"], current, caption=caption, topic_id=topic_id)
         with self.repository.db:
-            self.repository.db.execute(
+            saved = self.repository.db.execute(
                 "UPDATE archive_media SET vault_message_id=? WHERE owner_id=? AND id=?",
                 (sent.message_id, owner["owner_id"], media["id"]),
+            )
+            self.repository.db.execute(
+                """INSERT OR IGNORE INTO archive_vault_copies(owner_id,media_id,chat_id,telegram_id,state)
+                VALUES (?,?,?,?,?)""",
+                (
+                    owner["owner_id"],
+                    media["id"],
+                    owner["vault_chat_id"],
+                    sent.message_id,
+                    "live" if saved.rowcount else "pending",
+                ),
             )
 
     @staticmethod
@@ -512,11 +670,28 @@ class ArchiveService:
             from aiogram.types import ReplyParameters
 
             options["reply_parameters"] = ReplyParameters(message_id=reply_to, allow_sending_without_reply=True)
-        kind = media["kind"]
-        value = media["file_id"]
+        kind, value = media["kind"], media["file_id"]
+        local = self.safe_path(media["local_path"], self.blobs) if media["local_path"] else None
+        if kind == "live_photo":
+            if not local or not local.is_file():
+                raise MediaError(T.ARCHIVE_WEB_REMOTE_MEDIA, code="live_photo_unavailable")
+            kind, value = "video", FSInputFile(local, filename=media["filename"])
+        elif media["ephemeral"] and local is not None:
+            value = FSInputFile(local, filename=media["filename"])
         if kind not in {"sticker", "video_note"}:
             options["caption"] = caption
-        return await getattr(self.bot, f"send_{kind}")(**options, **{kind: value})
+        send = getattr(self.bot, f"send_{kind}")
+        try:
+            return await send(**options, **{kind: value})
+        except TelegramBadRequest as error:
+            if (
+                not local
+                or not local.is_file()
+                or not isinstance(value, str)
+                or not any(text in error.message.lower() for text in ("file identifier", "file reference"))
+            ):
+                raise
+            return await send(**options, **{kind: FSInputFile(local, filename=media["filename"])})
 
     async def _sync_copies(self, task: dict, owner: dict):
         if not owner["vault_chat_id"]:
@@ -556,76 +731,85 @@ class ArchiveService:
 
     async def _send_media(self, task: dict, owner: dict):
         media = self.repository.media(owner["owner_id"], task["payload"]["media_id"])
-        if not media or media["protected"]:
-            raise MediaError(T.ARCHIVE_SERVICE_PROTECTED_MEDIA, code="protected_media")
+        if not media:
+            raise LookupError("Media not found")
+        self.check_media_send(media)
         self.repository.task_status(task["id"], "sending")
         await self._send_file(owner["owner_id"], media, caption=f"{media['chat_title']} · {media['filename']}"[:1000])
 
+    def check_media_send(self, media: dict) -> None:
+        if media["protected"]:
+            raise MediaError(T.ARCHIVE_WEB_PROTECTED_MEDIA, code="protected_media")
+        if media["ephemeral"] and (
+            not media["local_path"] or not self.safe_path(media["local_path"], self.blobs).is_file()
+        ):
+            raise MediaError(T.ARCHIVE_WEB_EPHEMERAL_COPY_MISSING, code="ephemeral_copy_missing")
+
     async def _export(self, task: dict, owner: dict) -> dict:
-        folder = self.exports / str(owner["owner_id"]) / uuid.uuid4().hex
+        owner_id = owner["owner_id"]
+        folder = self.exports / str(owner_id) / uuid.uuid4().hex
         format_name = task["payload"].get("format", "json")
-        files = await write_export(
-            self.repository,
-            owner["owner_id"],
-            folder,
-            format_name=format_name,
-            chat_id=task["payload"].get("chat_id", 0),
-            max_part_bytes=min(10_000_000, self.settings.max_upload_bytes - 10000),
-        )
+        chat_id = task["payload"].get("chat_id", 0)
+        limit = self.settings.max_upload_bytes
+        stopped = self._active_exports[owner_id] = Event()
         try:
-            progress = task["progress"]
+            files = await write_export(
+                self.repository,
+                owner_id,
+                folder,
+                format_name=format_name,
+                chat_id=chat_id,
+                max_part_bytes=min(10_000_000, limit - 131_072),
+            )
+            rows = self.repository.db.execute(
+                f"""SELECT a.id,a.filename,a.kind,a.status,a.local_path,c.telegram_id AS chat_id,
+                m.telegram_id AS message_id FROM archive_media a JOIN archive_messages m ON m.id=a.message_id
+                JOIN archive_chats c ON m.chat_id=c.id
+                WHERE a.owner_id=? AND {RETAINED_MESSAGE} AND (?=0 OR m.chat_id=?) ORDER BY m.id,a.rowid""",
+                (owner_id, chat_id, chat_id),
+            ).fetchall()
+            attachments = []
+            for row in rows:
+                item = dict(row)
+                relative = item.pop("local_path")
+                path = self.safe_path(relative, self.blobs) if relative else None
+                item["path"] = path if path and path.is_file() else None
+                item["status"] = "included" if item["path"] else "missing_local_file" if path else row["status"]
+                attachments.append(item)
+            packing = asyncio.create_task(asyncio.to_thread(bundle_export, files, attachments, limit, stopped))
+            try:
+                files = await asyncio.shield(packing)
+            except asyncio.CancelledError:
+                stopped.set()
+                await asyncio.gather(packing, return_exceptions=True)
+                raise
             for index, path in enumerate(files):
-                if index < progress:
-                    continue
+                if stopped.is_set():
+                    raise MediaError(T.ARCHIVE_SERVICE_EXPORT_INVALIDATED, code="export_invalidated")
                 self.repository.task_status(task["id"], "sending")
-                await self.bot.send_document(
-                    owner["owner_id"],
-                    FSInputFile(path),
-                    caption=f"ThreadDock · {format_name.upper()} · {index + 1}/{len(files)}",
-                )
+                try:
+                    await self.bot.send_document(
+                        owner_id,
+                        FSInputFile(path),
+                        caption=f"ThreadDock · ZIP · {index + 1}/{len(files)}",
+                    )
+                except TelegramRetryAfter:
+                    if index:
+                        raise MediaError(T.ARCHIVE_SERVICE_EXPORT_INCOMPLETE, code="export_incomplete") from None
+                    raise
                 with self.repository.db:
                     self.repository.db.execute(
                         "UPDATE archive_tasks SET progress=? WHERE id=?", (index + 1, task["id"])
                     )
             return {"parts": len(files)}
         finally:
-            remove_directory(folder, self.exports)
+            self._active_exports.pop(owner_id)
+            if folder.exists():
+                remove_directory(folder, self.exports)
 
-    async def _reply(self, task: dict, owner: dict) -> dict:
-        payload = task["payload"]
-        chat = self.repository.chat(owner["owner_id"], payload["chat_id"])
-        if (
-            not chat
-            or not self.settings.business_enabled
-            or (self.settings.business_chats and chat["telegram_id"] not in self.settings.business_chats)
-            or not self.database.business_can_send(chat["connection_id"], chat["telegram_id"])
-        ):
-            raise MediaError(T.ARCHIVE_SERVICE_REPLY_NOT_ALLOWED, code="reply_not_allowed")
-        from aiogram.types import ReplyParameters
-
-        options = {"chat_id": chat["telegram_id"], "business_connection_id": chat["connection_id"]}
-        if payload.get("reply_to"):
-            target = self.repository.message(owner["owner_id"], payload["reply_to"])
-            if not target or target["chat_id"] != chat["id"]:
-                raise LookupError("Reply target not found")
-            options["reply_parameters"] = ReplyParameters(
-                message_id=target["telegram_id"], allow_sending_without_reply=True
-            )
-        self.repository.task_status(task["id"], "sending")
-        if payload.get("upload"):
-            path = self.safe_path(payload["upload"], self.uploads)
-            try:
-                sent = await self.bot.send_document(
-                    **options, document=FSInputFile(path, filename=payload["filename"]), caption=payload.get("text", "")
-                )
-            finally:
-                path.unlink(missing_ok=True)
-        else:
-            sent = await self.bot.send_message(**options, text=payload["text"])
-        if not sent.business_connection_id:
-            sent = sent.model_copy(update={"business_connection_id": chat["connection_id"]})
-        await self.capture(sent, manual_reply=True)
-        return {"message_id": sent.message_id}
+    def invalidate_export(self, owner_id: int):
+        if active := self._active_exports.get(owner_id):
+            active.set()
 
     def safe_path(self, relative: str, parent: Path | None = None) -> Path:
         parent = parent or self.root
@@ -646,7 +830,12 @@ class ArchiveService:
             )
         }
         for path in folder.iterdir():
-            if path.is_file() and not path.is_symlink() and path.relative_to(self.root).as_posix() not in known:
+            if (
+                path.is_file()
+                and not path.is_symlink()
+                and path.relative_to(self.root).as_posix() not in known
+                and path.stem not in self._media_in_flight
+            ):
                 self.safe_path(path.relative_to(self.root).as_posix(), folder).unlink()
 
     async def bind_vault(self, owner_id: int, chat_id: int):
@@ -672,7 +861,7 @@ class ArchiveService:
             self.repository.db.execute("UPDATE archive_chats SET topic_id=NULL WHERE owner_id=?", (owner_id,))
             self.repository.db.execute("UPDATE archive_media SET vault_message_id=NULL WHERE owner_id=?", (owner_id,))
             for media in self.repository.db.execute(
-                "SELECT id FROM archive_media WHERE owner_id=? AND protected=0", (owner_id,)
+                "SELECT id FROM archive_media WHERE owner_id=? AND protected=0 AND ephemeral=0", (owner_id,)
             ).fetchall():
                 self.repository._enqueue(owner_id, "media", {"media_id": media[0]}, f"vault:{chat_id}:{media[0]}")
 
@@ -734,17 +923,19 @@ class ArchiveService:
                 "SELECT owner_id,retention_days,auto_delete_disconnected FROM archive_owners"
             ).fetchall():
                 if owner["retention_days"]:
-                    self.repository.db.execute(
-                        "DELETE FROM archive_messages WHERE owner_id=? AND favorite=0 AND sent_at<?",
-                        (owner["owner_id"], now - owner["retention_days"] * 86400),
-                    )
+                    deleted = self.repository.expire_messages(owner["owner_id"], now - owner["retention_days"] * 86400)
+                    if deleted:
+                        self.invalidate_export(owner["owner_id"])
                 if owner["auto_delete_disconnected"]:
-                    self.repository.db.execute(
-                        "DELETE FROM archive_chats WHERE owner_id=? AND connection_id IN (SELECT connection_id FROM archive_connection_details WHERE owner_id=? AND enabled=0 AND disconnected_at<?)",
-                        (owner["owner_id"], owner["owner_id"], now - 7 * 86400),
-                    )
+                    deleted = self.repository.clear_disconnected(owner["owner_id"], now - 7 * 86400)
+                    if deleted:
+                        self.invalidate_export(owner["owner_id"])
             self.repository.db.execute(
-                "DELETE FROM archive_tasks WHERE status IN ('done','failed','uncertain') AND updated_at<?",
+                """DELETE FROM archive_tasks AS t
+                WHERE status IN ('done','failed','uncertain','superseded') AND updated_at<?
+                AND NOT (t.status='uncertain' AND t.kind='send_media' AND EXISTS (
+                    SELECT 1 FROM archive_media a WHERE a.owner_id=t.owner_id AND a.id=json_extract(t.payload,'$.media_id')
+                ))""",
                 (now - 7 * 86400,),
             )
         known = {

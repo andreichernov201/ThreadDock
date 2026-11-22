@@ -6,6 +6,7 @@ import sqlite3
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.client.telegram import TelegramAPIServer
+from aiogram.exceptions import TelegramNetworkError, TelegramRetryAfter, TelegramServerError
 from aiogram.types import ErrorEvent
 
 from archive.web import start_web_server
@@ -45,6 +46,7 @@ async def main() -> None:
                 app = Application(settings, database, bot, http)
                 app.archive.bot_username = identity.username or ""
                 dispatcher = Dispatcher(app=app)
+                ingestion_failed = asyncio.get_running_loop().create_future()
                 dispatcher.include_routers(
                     start.router,
                     archive.router,
@@ -63,9 +65,18 @@ async def main() -> None:
                         type(event.exception).__name__,
                         exc_info=(type(event.exception), event.exception, event.exception.__traceback__),
                     )
-                    if isinstance(event.exception, sqlite3.Error):
-                        # Stop before the next getUpdates offset acknowledges data we could not persist.
-                        await dispatcher.stop_polling()
+                    if isinstance(event.exception, sqlite3.Error) or (
+                        (
+                            event.update.business_message
+                            or event.update.edited_business_message
+                            or event.update.deleted_business_messages
+                            or event.update.business_connection
+                        )
+                        and isinstance(event.exception, (TelegramNetworkError, TelegramServerError, TelegramRetryAfter))
+                    ):
+                        # Keep polling suspended on this update until shutdown cancels the receiver.
+                        ingestion_failed.set_result(None)
+                        await asyncio.Future()
                     return True
 
                 await configure_telegram(bot, app.archive.config)
@@ -84,8 +95,11 @@ async def main() -> None:
                 logger.info("ThreadDock started workers=%s", settings.workers)
                 try:
                     done, _ = await asyncio.wait(
-                        [polling, *app.queue.tasks, app.archive.task], return_when=asyncio.FIRST_COMPLETED
+                        [polling, *app.queue.tasks, app.archive.task, ingestion_failed],
+                        return_when=asyncio.FIRST_COMPLETED,
                     )
+                    if ingestion_failed in done:
+                        raise RuntimeError("Telegram intake paused before acknowledging an update")
                     if polling not in done:
                         raise RuntimeError("A background service stopped unexpectedly")
                     await polling
@@ -94,6 +108,7 @@ async def main() -> None:
                     app.queue.stopping.set()
                     app.archive.stopping.set()
                     polling.cancel()
+                    ingestion_failed.cancel()
                     await asyncio.gather(polling, return_exceptions=True)
                     await app.queue.close()
                     await app.archive.close()

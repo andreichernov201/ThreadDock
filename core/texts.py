@@ -55,7 +55,6 @@ ARCHIVE_SERVICE_VAULT_NOT_PRIVATE = "В группе-архиве есть др�
 ARCHIVE_SERVICE_COPY_DELETED = "🗑 Удалено"
 ARCHIVE_SERVICE_COPY_EDITED = "✏️ Изменено"
 ARCHIVE_SERVICE_COPY_SAVED = "Сохранено"
-ARCHIVE_SERVICE_PROTECTED_MEDIA = "Это медиа недоступно для пересылки."
 ARCHIVE_SERVICE_REPLY_NOT_ALLOWED = "Telegram не разрешает ответ: проверь подключение и окно 24 часа."
 ARCHIVE_SERVICE_VAULT_REQUIREMENTS = (
     "Нужна личная закрытая группа с темами: только ты и бот, оба с правами управления темами."
@@ -80,6 +79,9 @@ ARCHIVE_WEB_DELETE_CONFIRMATION_REQUIRED = "Для удаления введи �
 ARCHIVE_WEB_EXCLUDE_REQUIRES_CONFIRMATION = "Используй действие «Исключить и удалить историю» с подтверждением."
 ARCHIVE_WEB_REMOTE_MEDIA = "Файл можно запросить у бота, если Telegram предоставляет к нему доступ."
 ARCHIVE_WEB_PROTECTED_MEDIA = "Защищённое медиа нельзя пересылать."
+ARCHIVE_WEB_EPHEMERAL_COPY_MISSING = "Для отправки исчезающего вложения нужна сохранённая копия файла."
+ARCHIVE_WEB_SEND_RETRY_CHECK_CHAT = "Проверь личный чат с ботом и подтверди повторную отправку."
+ARCHIVE_WEB_SEND_RETRY_STALE = "Статус отправки изменился. Открой вложение снова и проверь состояние."
 ARCHIVE_WEB_ARCHIVE_CONSENT_REQUIRED = "Подтверди сохранение разрешённых переписок."
 ARCHIVE_WEB_EXPORT_FORMAT_REQUIRED = "Выбери формат экспорта."
 ARCHIVE_WEB_REPLY_WINDOW_CLOSED = "Нет права ответа или прошло 24 часа после входящего сообщения."
@@ -101,7 +103,7 @@ HANDLERS_ARCHIVE_STATS_SUMMARY = "Твой архив · последние 30 �
 HANDLERS_ARCHIVE_STATS_BUTTON = "Статистика"
 HANDLERS_ARCHIVE_EXPORT_FORMATS = "Форматы: /export json, /export csv, /export md, /export html"
 HANDLERS_ARCHIVE_EXPORT_QUEUED = "Экспорт добавлен в очередь. Пришлю файлы в этот чат."
-HANDLERS_ARCHIVE_DELETE_INSTRUCTIONS = "Удаление всего архива выполняется в настройках приложения после подтверждения. Оно удаляет базу и локальные файлы твоего архива. Копии в личной Telegram-группе удаляются отдельно через Telegram."
+HANDLERS_ARCHIVE_DELETE_INSTRUCTIONS = "В настройках приложения можно очистить историю с сохранением статистики, сбросить статистику или удалить все данные. Бот попробует удалить известные копии из группы-хранилища. Остатки, отправленные экспорты и резервные копии удаляются вручную."
 HANDLERS_ARCHIVE_SETTINGS_BUTTON = "Настройки архива"
 HANDLERS_ARCHIVE_ARCHIVE_INTRO = "Архив удалений и правок. Уведомления приходят при удалении, изменении сообщения или совпадении ключевого слова. Открой архив, чтобы увидеть содержимое и историю версий. Сохранение включается в настройках приложения."
 HANDLERS_ARCHIVE_ARCHIVE_NO_WEB = (
@@ -243,7 +245,7 @@ ARCHIVE_REASON_KEYWORD = "Во входящем сообщении найден�
 ARCHIVE_REASON_PROFILE = "Собеседник изменил имя или username."
 ARCHIVE_REASON_DELETED_BATCH = "Telegram сообщил об удалении {count} сообщений в этой переписке."
 ARCHIVE_REASON_MATCHES = "Совпало: {words}."
-ARCHIVE_AUTHOR_OPTOUT = "Сохранение твоих сообщений в архивах этого бота отключено для всех владельцев. Содержимое, версии и локальные файлы удалены. Копии и уже отправленные экспорты в Telegram удаляются отдельно. /optin — снова разрешить сохранение новых сообщений."
+ARCHIVE_AUTHOR_OPTOUT = "Сохранение твоих сообщений отключено для всех владельцев. Записи и локальные файлы удалены. Бот попробует удалить известные ему копии в группах-хранилищах. Остатки в Telegram, скачанные экспорты и резервные копии удаляют их владельцы. /optin — снова разрешить сохранение новых сообщений."
 ARCHIVE_AUTHOR_OPTIN = "Сохранение твоих новых сообщений снова разрешено. Удалённая история не восстанавливается."
 ARCHIVE_AUTHOR_OPTOUT_COMMAND = "Запретить архивировать мои сообщения"
 ARCHIVE_AUTHOR_OPTIN_COMMAND = "Разрешить архивировать мои сообщения"
@@ -251,7 +253,19 @@ ARCHIVE_CONFIG_DOMAIN_MISMATCH = "ARCHIVE_DOMAIN должен совпадать
 ARCHIVE_CONFIG_DOMAIN_REQUIRED = "Для публикации архива укажи ARCHIVE_DOMAIN."
 SERVICES_YTDLP_BLOCKED = "Пост недоступен."
 SERVICES_YTDLP_FORMAT_UNAVAILABLE = "Сайт не предоставил подходящий видеоформат."
-ARCHIVE_REASON_REPLY_MEDIA = "Сохранено вложение из ответа на сообщение."
+ARCHIVE_REASON_REPLY_MEDIA = (
+    "Telegram передал признак одноразового просмотра или таймера. Файл поставлен в приоритетную очередь."
+)
+ARCHIVE_REASON_PROTECTED = "Telegram пометил вложение как защищённое. Статус сохранения доступен в архиве."
+ARCHIVE_SERVICE_EPHEMERAL = "Исчезающее вложение"
+ARCHIVE_SERVICE_PROTECTED_ATTACHMENT = "Защищённое вложение"
+ARCHIVE_SERVICE_PREVIOUS_MISSING = "Исходная версия недоступна"
+ARCHIVE_SERVICE_ATTACHMENT_CHANGED = "Вложения изменились"
+ARCHIVE_SERVICE_EDIT_COMPARISON = (
+    "\n\n<b>Было</b>\n<blockquote>{before}</blockquote>\n<b>Стало</b>\n<blockquote>{after}</blockquote>"
+)
+ARCHIVE_SERVICE_EXPORT_INVALIDATED = "Данные архива удалены во время подготовки экспорта."
+ARCHIVE_SERVICE_EXPORT_INCOMPLETE = "Telegram прервал отправку архива. Доставлены только первые части."
 
 HANDLERS_CALLBACKS_ALREADY_QUEUED = "Уже в очереди. Пришлю файл один раз."
 
@@ -271,7 +285,7 @@ GROUP_MODE_COMMAND_SLIDESHOW = "Слайдшоу с музыкой в этой �
 
 ARCHIVE_SERVICE_NOTIFICATION_HEADER = "<b>{title}</b>\n{chat}"
 
-ARCHIVE_SERVICE_EMPTY_PREVIEW = "Медиа без подписи или содержимое, которое бот не успел сохранить."
+ARCHIVE_SERVICE_EMPTY_PREVIEW = "Без текста или подписи"
 
 HANDLERS_ARCHIVE_OVERVIEW = "Архив переписок\n\nСохранение: {state}\nTelegram Business: {connection}\n\n1. Подключи ThreadDock в Telegram → Настройки → Telegram Business → Чат-боты и выбери переписки.\n2. Включи сохранение командой /archive_on или в приложении.\n3. Открой архив кнопкой ниже: там переписки, поиск, правки, удаления и медиа.\n\nАрхив сохраняет новые сообщения после включения. Старую историю Telegram бот получить не может.\n/pause — пауза, /mute — уведомления, /export — выгрузить архив."
 

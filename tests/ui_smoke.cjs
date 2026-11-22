@@ -115,6 +115,13 @@ const assert = require("node:assert/strict");
         assert(await page.locator(".insight-metrics").isVisible());
         assert(await page.locator("#stats-chat").isVisible());
         assert.equal(await page.locator(".stat").count(), 4);
+        await page.locator('.bottom-nav [data-view="settings"]').click();
+        await page.locator('[data-action="delete-stats"]').click();
+        await page.locator('dialog[open] #delete-form[data-kind="stats"]').waitFor();
+        await page.locator('dialog[open] [data-action="close-modal"]').click();
+        await page.locator('[data-action="delete-history"]').click();
+        await page.locator('dialog[open] #delete-form[data-kind="history"]').waitFor();
+        await page.locator('dialog[open] [data-action="close-modal"]').click();
         await page.locator('.bottom-nav [data-view="feed"]').click();
         await page.setViewportSize({ width: 1200, height: 900 });
         await page.locator(".event-row").first().waitFor();
@@ -123,9 +130,53 @@ const assert = require("node:assert/strict");
                 document.documentElement.scrollWidth <= innerWidth + 1
             ),
         );
+        const sendPage = await browser.newPage({ viewport: { width: 390, height: 844 } });
+        sendPage.on("pageerror", (error) => errors.push(error.message));
+        await sendPage.route("https://telegram.org/**", (route) => route.abort());
+        await sendPage.addInitScript(() => {
+            window.Telegram = { WebApp: { initData: "fixture", ready() {}, expand() {}, onEvent() {} } };
+        });
+        const mediaId = "a".repeat(32);
+        const media = {
+            id: mediaId, kind: "photo", filename: "fixture.jpg", size: 123,
+            chat_title: "Fixture", status: "ready", protected: 0, ephemeral: 1,
+        };
+        const confirmPath = `/api/media/${mediaId}/send/confirm`;
+        const created = 1234567890.5;
+        const responses = {
+            "/api/auth": { token: "fixture", csrf: "fixture", locked: false, user: { id: 10 } },
+            "/api/session": { owner: { enabled: 1, language: "ru" }, bot_username: "fixture_bot" },
+            "/api/chats": { items: [] },
+            "/api/events": { items: [], counts: {} },
+            "/api/gallery": { items: [media] },
+            [`/api/media/${mediaId}/send`]: { task_id: 14, status: "uncertain" },
+            "/api/tasks/14": { id: 14, created_at: created, status: "uncertain" },
+            [confirmPath]: { task_id: 15, status: "pending" },
+            "/api/tasks/15": { id: 15, status: "done" },
+        };
+        let confirmations = 0;
+        await sendPage.route("**/api/**", (route) => {
+            const routePath = new URL(route.request().url()).pathname;
+            if (routePath === confirmPath) confirmations++;
+            return route.fulfill({ json: responses[routePath] || {} });
+        });
+        await sendPage.goto(url.split("?")[0]);
+        await sendPage.locator('.bottom-nav [data-view="gallery"]').click();
+        await sendPage.locator('[data-action="send-media"]').click();
+        const confirmation = sendPage.locator('dialog[open] #send-retry-form');
+        await confirmation.waitFor();
+        await confirmation.locator('button[type="submit"]').click();
+        assert.equal(confirmations, 0);
+        await confirmation.locator('[name="checked_chat"]').check();
+        const posted = sendPage.waitForRequest((req) => req.url().endsWith(confirmPath));
+        await confirmation.locator('button[type="submit"]').click();
+        assert.deepEqual((await posted).postDataJSON(), { task_id: 14, created_at: created, checked_chat: true });
+        await confirmation.waitFor({ state: "hidden" });
+        assert.equal(confirmations, 1);
+        await sendPage.close();
         assert.deepEqual(errors, []);
         console.log(
-            "UI_CHECK_PASSED mobile, desktop, event history and statistics",
+            "UI_CHECK_PASSED mobile, desktop, event history, statistics and confirmed media retry",
         );
     } finally {
         try {

@@ -12,52 +12,50 @@ def insights(repository, owner_id, start, end, chat_id, offset, sample):
         return [dict(row) for row in db.execute(sql, values)]
 
     content = rows(
-        f"""SELECT coalesce(sum(length(m.body)),0) AS characters,
-        coalesce(avg(length(m.body)),0) AS mean_characters,
-        coalesce(max(length(m.body)),0) AS longest_characters,
-        sum(m.body LIKE '%http://%' OR m.body LIKE '%https://%') AS messages_with_links,
-        sum(m.reply_to IS NOT NULL) AS replies,
-        sum(m.body='') AS without_text,
+        f"""SELECT coalesce(sum(m.characters),0) AS characters,
+        coalesce(avg(m.characters),0) AS mean_characters,
+        coalesce(max(m.characters),0) AS longest_characters,
+        sum(m.has_link) AS messages_with_links,
+        sum(m.has_reply) AS replies,
+        sum(m.without_text) AS without_text,
         count(DISTINCT date(m.sent_at+?,'unixepoch')) AS active_days
-        FROM archive_messages m WHERE {where}""",
+        FROM archive_message_statistics m WHERE {where}""",
         (offset, *args),
     )[0]
     hourly = rows(
         f"""SELECT cast(strftime('%H',m.sent_at+?,'unixepoch') AS INTEGER) AS hour,
-        count(*) AS messages,sum(m.outgoing) AS outgoing FROM archive_messages m
+        count(*) AS messages,sum(m.outgoing) AS outgoing FROM archive_message_statistics m
         WHERE {where} GROUP BY hour ORDER BY hour""",
         (offset, *args),
     )
     weekdays = rows(
         f"""SELECT (cast(strftime('%w',m.sent_at+?,'unixepoch') AS INTEGER)+6)%7 AS weekday,
-        count(*) AS messages FROM archive_messages m WHERE {where} GROUP BY weekday ORDER BY weekday""",
+        count(*) AS messages FROM archive_message_statistics m WHERE {where} GROUP BY weekday ORDER BY weekday""",
         (offset, *args),
     )
     chats = rows(f"""SELECT m.chat_id,c.title,count(*) AS messages,sum(m.outgoing) AS outgoing,
-        sum(m.deleted_at IS NOT NULL) AS deleted,sum(m.edited_at IS NOT NULL) AS edited,
+        sum(m.deleted_at IS NOT NULL) AS deleted,sum(m.edited) AS edited,
         min(m.sent_at) AS first_at,max(m.sent_at) AS last_at
-        FROM archive_messages m JOIN archive_chats c ON c.id=m.chat_id AND c.owner_id=m.owner_id
+        FROM archive_message_statistics m JOIN archive_chats c ON c.id=m.chat_id AND c.owner_id=m.owner_id
         WHERE {where} GROUP BY m.chat_id ORDER BY messages DESC,m.chat_id LIMIT 30""")
-    media = rows(f"""SELECT a.kind,count(*) AS files,sum(a.size) AS declared_bytes,
-        sum(a.status='ready') AS saved_files,
-        sum(CASE WHEN a.status='ready' THEN a.size ELSE 0 END) AS saved_bytes
-        FROM archive_media a JOIN archive_messages m ON m.id=a.message_id AND m.owner_id=a.owner_id
-        WHERE {where} GROUP BY a.kind ORDER BY files DESC""")
+    media = rows(f"""SELECT m.kind,sum(m.files) AS files,sum(m.declared_bytes) AS declared_bytes,
+        sum(m.saved_files) AS saved_files,sum(m.saved_bytes) AS saved_bytes
+        FROM archive_media_statistics m WHERE {where} GROUP BY m.kind ORDER BY files DESC""")
     events = rows(
-        """SELECT e.kind,count(*) AS count FROM archive_events e
+        """SELECT e.kind,count(*) AS count FROM archive_event_statistics e
         WHERE e.owner_id=? AND (?=0 OR e.chat_id=?) AND e.occurred_at>=? AND e.occurred_at<?
         AND e.kind!='new' GROUP BY e.kind ORDER BY count DESC""",
         args,
     )
     edits = rows(
-        """SELECT count(*) AS edits FROM archive_events e
+        """SELECT count(*) AS edits FROM archive_event_statistics e
         WHERE e.owner_id=? AND (?=0 OR e.chat_id=?) AND e.occurred_at>=? AND e.occurred_at<?
         AND e.kind='edited'""",
         args,
     )[0]["edits"]
     daily = rows(
         f"""SELECT date(m.sent_at+?,'unixepoch') AS day,count(*) AS messages
-        FROM archive_messages m WHERE {where} GROUP BY day ORDER BY day""",
+        FROM archive_message_statistics m WHERE {where} GROUP BY day ORDER BY day""",
         (offset, *args),
     )
     from datetime import date
