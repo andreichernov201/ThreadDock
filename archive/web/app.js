@@ -920,7 +920,6 @@ function renderSettings() {
         COPY.STATISTICS_MANAGEMENT,
         e(t(COPY.STATISTICS)),
         e(t(COPY.STATISTICS_MANAGEMENT_HINT)),
-        e(t(COPY.REBUILD_STATISTICS)),
         e(t(COPY.RESET_STATISTICS)),
       ) + (deletion?.vault_pending || deletion?.vault_manual
         ? `<section class="panel setting-card"><h2>${
@@ -1278,7 +1277,6 @@ async function trackTask(id) {
     await new Promise((resolve) => setTimeout(resolve, 2000));
     try {
       const job = await api.request(`/api/tasks/${id}`);
-      if (job.status === "cancelled") return;
       if (job.status === "done") {
         toast(COPY.DONE);
         return;
@@ -1416,15 +1414,7 @@ document.addEventListener("click", async (event) => {
     else if (action === "delete-all") deleteModal("all");
     else if (action === "delete-history") deleteModal("history");
     else if (action === "delete-stats") deleteModal("stats");
-    else if (action === "rebuild-stats") {
-      button.disabled = true;
-      try {
-        await queue("/api/stats/rebuild", {}, true);
-        if (S.view === "stats" && !S.locked) await load();
-      } finally {
-        button.disabled = false;
-      }
-    } else if (action === "delete-chat") deleteModal("chat");
+    else if (action === "delete-chat") deleteModal("chat");
     else if (action === "delete-message") {
       deleteModal("message", Number(button.dataset.id));
     } else if (action === "media") await previewMedia(button.dataset.id);

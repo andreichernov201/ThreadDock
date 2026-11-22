@@ -507,11 +507,6 @@ def create_web_app(service) -> web.Application:
         repository.reset_statistics(request["owner"]["owner_id"])
         return web.json_response({"ok": True})
 
-    @routes.post("/api/stats/rebuild")
-    async def rebuild_stats(request):
-        job = repository.request_statistics_rebuild(request["owner"]["owner_id"])
-        return web.json_response({"task_id": job}, status=202)
-
     @routes.post("/api/history/delete")
     async def clear_history(request):
         body = await body_json(request)

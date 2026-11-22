@@ -221,16 +221,15 @@ export const COPY = {
   "DELETE_ALL_ARCHIVE_DATA": "Удалить все данные",
   "CLEAR_ARCHIVE_HISTORY": "Очистить историю",
   "RESET_STATISTICS": "Сбросить статистику",
-  "REBUILD_STATISTICS": "Пересчитать по сохранённой истории",
   "STATISTICS_RESET_DONE": "Статистика сброшена.",
   "STATISTICS_MANAGEMENT":
-    '<section class="panel setting-card"><h2>{{0}}</h2><p class="description">{{1}}</p><div class="setting-footer"><button class="button" data-action="rebuild-stats">{{2}}</button><button class="button danger" data-action="delete-stats">{{3}}</button></div></section>',
+    '<section class="panel setting-card"><h2>{{0}}</h2><p class="description">{{1}}</p><div class="setting-footer"><button class="button danger" data-action="delete-stats">{{2}}</button></div></section>',
   "STATISTICS_MANAGEMENT_HINT":
-    "После очистки истории остаются счётчики сообщений и типов вложений. После сброса можно заново посчитать данные из истории, которая ещё сохранена в ThreadDock.",
+    "Очистка истории сохраняет счётчики сообщений и вложений по типам.",
   "CLEAR_HISTORY_HINT":
     "Переписки, версии и локальные файлы будут очищены. Счётчики, настройки и подключения сохранятся.",
   "RESET_STATISTICS_HINT":
-    "Счётчики будут обнулены. Переписки и вложения останутся доступными. Пересчёт сможет использовать сохранившуюся историю.",
+    "Счётчики начнутся заново с новых сообщений. Переписки и вложения останутся доступными.",
   "VAULT_DELETION_HINT":
     "Бот попробует удалить известные копии в группе-хранилище. Telegram может отказать, например если прошло более 48 часов. Старые копии, уведомления, экспорты и резервные копии могут потребовать ручного удаления.",
   "OPERATOR_CARD":

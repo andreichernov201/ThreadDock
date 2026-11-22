@@ -332,12 +332,6 @@ class ArchiveService:
                     await self._send_media(task, owner)
                 elif task["kind"] == "export":
                     result = await self._export(task, owner)
-                elif task["kind"] == "rebuild_statistics":
-                    while self.repository.rebuild_statistics_batch(owner_id, identifier):
-                        await asyncio.sleep(0)
-                    current = self.repository.task(owner_id, identifier)
-                    if not current or current["status"] != "running":
-                        return
                 elif task["kind"] == "reply":
                     self.repository.task_status(identifier, "failed", code="reply_retired")
                     if upload := task["payload"].get("upload"):
@@ -356,7 +350,7 @@ class ArchiveService:
             )
         except asyncio.CancelledError:
             current = self.repository.task(owner_id, identifier)
-            if current and current["status"] in {"running", "sending", "uncertain"}:
+            if current:
                 self.repository.task_status(
                     identifier,
                     "uncertain" if current["status"] in {"sending", "uncertain"} else "pending",
@@ -920,7 +914,7 @@ class ArchiveService:
                     if deleted:
                         self.invalidate_export(owner["owner_id"])
             self.repository.db.execute(
-                "DELETE FROM archive_tasks WHERE status IN ('done','failed','uncertain','cancelled') AND updated_at<?",
+                "DELETE FROM archive_tasks WHERE status IN ('done','failed','uncertain') AND updated_at<?",
                 (now - 7 * 86400,),
             )
         known = {

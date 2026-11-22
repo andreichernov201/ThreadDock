@@ -122,8 +122,6 @@ const assert = require("node:assert/strict");
         await page.locator('[data-action="delete-history"]').click();
         await page.locator('dialog[open] #delete-form[data-kind="history"]').waitFor();
         await page.locator('dialog[open] [data-action="close-modal"]').click();
-        await page.locator('[data-action="rebuild-stats"]').click();
-        await page.locator('[data-action="rebuild-stats"]:enabled').waitFor();
         await page.locator('.bottom-nav [data-view="feed"]').click();
         await page.setViewportSize({ width: 1200, height: 900 });
         await page.locator(".event-row").first().waitFor();

@@ -69,29 +69,20 @@ class InsightTests(ArchiveFixture, unittest.TestCase):
         self.assertEqual(statistics_for(self.repo, 10)["totals"]["messages"], 0)
         self.assertEqual(statistics_for(self.repo, 10)["insights"]["media_types"], [])
 
-    def test_rebuild_restores_saved_history_in_batches_and_stops_after_reset(self):
+    def test_statistics_reset_counts_only_new_messages_even_after_clearing_history(self):
         now = time.time()
         self.ingest(telegram_id=1, at=now - 100, media=[self.photo("gone")])
         self.repo.clear_history(10)
-        self.ingest(telegram_id=2, at=now - 80, media=[self.photo("saved")])
-        self.ingest(telegram_id=3, at=now - 60)
+        saved = self.ingest(telegram_id=2, at=now - 80, media=[self.photo("saved")])
         self.repo.reset_statistics(10)
-        self.ingest(telegram_id=4, at=now + 1)
+        self.ingest(telegram_id=3, at=now + 1, media=[self.photo("new")])
         window = {"start": now - 200, "end": now + 10}
+        self.assertIsNotNone(self.repo.message(10, saved))
         self.assertEqual(statistics_for(self.repo, 10, **window)["totals"]["messages"], 1)
-        task = self.repo.request_statistics_rebuild(10)
-        self.assertEqual(self.repo.request_statistics_rebuild(10), task)
-        self.repo.task_status(task, "running")
-        self.assertTrue(self.repo.rebuild_statistics_batch(10, task, limit=1))
-        self.assertEqual(statistics_for(self.repo, 10, **window)["totals"]["messages"], 2)
-        self.assertTrue(self.repo.rebuild_statistics_batch(10, task, limit=1))
-        self.assertFalse(self.repo.rebuild_statistics_batch(10, task, limit=1))
+        self.repo.clear_history(10)
         result = statistics_for(self.repo, 10, **window)
-        self.assertEqual(result["totals"]["messages"], 3)
+        self.assertEqual(result["totals"]["messages"], 1)
         self.assertEqual(result["insights"]["media_types"][0]["files"], 1)
-        self.repo.reset_statistics(10)
-        self.assertFalse(self.repo.rebuild_statistics_batch(10, task, limit=1))
-        self.assertEqual(self.repo.task(10, task)["status"], "cancelled")
 
     def test_late_delete_updates_cleared_message_statistics_without_restoring_history(self):
         identifier = self.ingest(media=[self.photo()])

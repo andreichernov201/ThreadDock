@@ -423,7 +423,7 @@ class RepositoryTests(ArchiveFixture, unittest.TestCase):
 
 
 class WebTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
-    async def test_clear_history_reset_and_queued_rebuild_are_independent(self):
+    async def test_clear_history_and_statistics_reset_are_independent(self):
         cleared = self.ingest(media=[self.photo("cleared")], archived=True)
         foreign = self.ingest(owner=20, archived=True)
         self.assertEqual((await self.request("POST", "/api/history/delete", {"confirmation": "wrong"})).status, 400)
@@ -436,20 +436,6 @@ class WebTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.request("POST", "/api/stats/delete", {"confirmation": "УДАЛИТЬ"})).status, 200)
         self.assertEqual(json.loads((await self.request("GET", "/api/stats")).body)["totals"]["messages"], 0)
         self.assertIsNotNone(self.repo.message(10, preserved))
-
-        first = await self.request("POST", "/api/stats/rebuild", {})
-        retry = await self.request("POST", "/api/stats/rebuild", {})
-        self.assertEqual(first.status, 202)
-        self.assertEqual(first.body, retry.body)
-        task_id = json.loads(first.body)["task_id"]
-        with self.repo.db:
-            self.repo.db.execute("UPDATE archive_tasks SET available_at=? WHERE id!=?", (time.time() + 60, task_id))
-        await self.service._process(self.repo.claim())
-        self.assertEqual(self.repo.task(10, task_id)["status"], "done")
-        self.assertIsNone(self.repo.task(20, task_id))
-        after = json.loads((await self.request("GET", "/api/stats")).body)
-        self.assertEqual(after["totals"]["messages"], 1)
-        self.assertEqual(after["insights"]["media_types"][0]["files"], 1)
 
     async def test_keyword_only_record_has_no_detail_search_result_or_preview(self):
         self.repo.update_owner(10, {"keywords": ["keyword"]})

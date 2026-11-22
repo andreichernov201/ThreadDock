@@ -1044,50 +1044,12 @@ class ArchiveRepository:
 
     def reset_statistics(self, owner_id: int) -> None:
         with self.db:
-            self.db.execute(
-                """UPDATE archive_tasks SET status='cancelled',error_code='statistics_reset',updated_at=?
-                WHERE owner_id=? AND kind='rebuild_statistics' AND status IN ('pending','running')""",
-                (time.time(), owner_id),
-            )
             self.db.execute("DELETE FROM archive_stat_events WHERE owner_id=?", (owner_id,))
             self.db.execute("DELETE FROM archive_stat_messages WHERE owner_id=?", (owner_id,))
             self.db.execute(
                 "INSERT OR REPLACE INTO archive_statistics_resets(owner_id,reset_at) VALUES (?,?)",
                 (owner_id, time.time()),
             )
-
-    def request_statistics_rebuild(self, owner_id: int) -> int:
-        with self.db:
-            active = self.db.execute(
-                """SELECT id FROM archive_tasks WHERE owner_id=? AND kind='rebuild_statistics'
-                AND status IN ('pending','running') LIMIT 1""",
-                (owner_id,),
-            ).fetchone()
-            return active["id"] if active else self._enqueue(owner_id, "rebuild_statistics", {})
-
-    def rebuild_statistics_batch(self, owner_id: int, task_id: int, *, limit: int = 500) -> bool:
-        """Bring an older batch of saved messages back into statistics."""
-        with self.db:
-            active = self.db.execute(
-                """SELECT r.reset_at FROM archive_tasks t JOIN archive_statistics_resets r ON t.owner_id=r.owner_id
-                WHERE t.id=? AND t.owner_id=? AND t.kind='rebuild_statistics' AND t.status='running'""",
-                (task_id, owner_id),
-            ).fetchone()
-            if active is None:
-                return False
-            oldest = self.db.execute(
-                """SELECT min(sent_at) FROM (SELECT sent_at FROM archive_messages
-                WHERE owner_id=? AND sent_at<? ORDER BY sent_at DESC LIMIT ?)""",
-                (owner_id, active["reset_at"], limit),
-            ).fetchone()[0]
-            if oldest is None:
-                self.db.execute("DELETE FROM archive_statistics_resets WHERE owner_id=?", (owner_id,))
-                return False
-            self.db.execute(
-                "UPDATE archive_statistics_resets SET reset_at=? WHERE owner_id=?",
-                (oldest, owner_id),
-            )
-            return True
 
     def purge_owner(self, owner_id: int) -> None:
         with self.db:
