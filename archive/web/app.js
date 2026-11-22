@@ -61,6 +61,7 @@ const S = {
   query: "",
   items: [],
   cursor: null,
+  cursorBefore: null,
   chats: [],
   stats: null,
   meta: null,
@@ -482,7 +483,9 @@ function eventFeed() {
     )?.title || COPY.CONVERSATION;
     const message = item.message_id || kind === "search";
     const id = message ? (item.message_id || item.id) : item.chat_id;
-    const body = item.match_text || item.body ||
+    const body =
+      [item.match_text, item.match_filenames].filter(Boolean).join(" · ") ||
+      item.body ||
       (kind === "unknown_deleted"
         ? COPY.UNKNOWN_MESSAGE
         : kind === "profile"
@@ -970,11 +973,17 @@ async function load(append = false) {
       }&kind=${S.mode}`;
     } else if (S.view === "gallery") path = `/api/gallery?chat=${S.chat || 0}`;
     else path = `/api/events?kind=${S.mode}&chat=${S.chat || 0}`;
-    if (append && S.cursor) path += `&cursor=${encodeURIComponent(S.cursor)}`;
+    if (append && S.cursor) {
+      path += `&cursor=${encodeURIComponent(S.cursor)}`;
+      if (S.cursorBefore != null && path.startsWith("/api/events?")) {
+        path += `&before=${encodeURIComponent(S.cursorBefore)}`;
+      }
+    }
     const data = await api.request(path);
     S.items = append ? [...S.items, ...data.items] : data.items;
     S.counts = data.counts || {};
     S.cursor = data.next_cursor;
+    S.cursorBefore = data.next_before ?? null;
     S.newEvents = 0;
     render();
   } finally {
@@ -1795,13 +1804,17 @@ setInterval(async () => {
   }
   if (S.view === "feed" && !S.query) {
     try {
+      const { chat, mode } = S;
       const result = await api.request(
-        `/api/events?kind=${S.mode}&chat=${S.chat || 0}`,
+        `/api/events?kind=${mode}&chat=${chat || 0}`,
       );
-      if (result.items[0]?.id && result.items[0].id !== S.items[0]?.id) {
-        S.newEvents = result.items.filter((item) =>
-          item.id > (S.items[0]?.id || 0)
-        ).length;
+      if (S.view !== "feed" || S.query || S.chat !== chat || S.mode !== mode) {
+        return;
+      }
+      const loaded = new Set(S.items.map((item) => item.id));
+      const unseen = result.items.filter((item) => !loaded.has(item.id)).length;
+      if (unseen !== S.newEvents) {
+        S.newEvents = unseen;
         render();
       }
     } catch {}
