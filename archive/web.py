@@ -499,6 +499,30 @@ def create_web_app(service) -> web.Application:
             options.update(start=float(request.query["start"]), end=float(request.query["end"]))
         return web.json_response(statistics_for(repository, request["owner"]["owner_id"], **options))
 
+    @routes.post("/api/stats/delete")
+    async def delete_stats(request):
+        body = await body_json(request)
+        if body.get("confirmation") != T.ARCHIVE_WEB_DELETE_CONFIRMATION:
+            raise ValueError(T.ARCHIVE_WEB_DELETE_CONFIRMATION_REQUIRED)
+        repository.reset_statistics(request["owner"]["owner_id"])
+        return web.json_response({"ok": True})
+
+    @routes.post("/api/stats/rebuild")
+    async def rebuild_stats(request):
+        job = repository.request_statistics_rebuild(request["owner"]["owner_id"])
+        return web.json_response({"task_id": job}, status=202)
+
+    @routes.post("/api/history/delete")
+    async def clear_history(request):
+        body = await body_json(request)
+        if body.get("confirmation") != T.ARCHIVE_WEB_DELETE_CONFIRMATION:
+            raise ValueError(T.ARCHIVE_WEB_DELETE_CONFIRMATION_REQUIRED)
+        owner = request["owner"]["owner_id"]
+        async with service.owner_lock(owner):
+            repository.clear_history(owner)
+            service.cleanup_owner_blobs(owner)
+        return web.json_response({"ok": True, **repository.deletion_status(owner)})
+
     @routes.patch("/api/settings")
     async def settings(request):
         body = await body_json(request)

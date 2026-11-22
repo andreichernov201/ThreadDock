@@ -332,6 +332,12 @@ class ArchiveService:
                     await self._send_media(task, owner)
                 elif task["kind"] == "export":
                     result = await self._export(task, owner)
+                elif task["kind"] == "rebuild_statistics":
+                    while self.repository.rebuild_statistics_batch(owner_id, identifier):
+                        await asyncio.sleep(0)
+                    current = self.repository.task(owner_id, identifier)
+                    if not current or current["status"] != "running":
+                        return
                 elif task["kind"] == "reply":
                     self.repository.task_status(identifier, "failed", code="reply_retired")
                     if upload := task["payload"].get("upload"):
@@ -350,7 +356,7 @@ class ArchiveService:
             )
         except asyncio.CancelledError:
             current = self.repository.task(owner_id, identifier)
-            if current:
+            if current and current["status"] in {"running", "sending", "uncertain"}:
                 self.repository.task_status(
                     identifier,
                     "uncertain" if current["status"] in {"sending", "uncertain"} else "pending",
@@ -906,21 +912,15 @@ class ArchiveService:
                 "SELECT owner_id,retention_days,auto_delete_disconnected FROM archive_owners"
             ).fetchall():
                 if owner["retention_days"]:
-                    deleted = self.repository.db.execute(
-                        "DELETE FROM archive_messages WHERE owner_id=? AND favorite=0 AND sent_at<?",
-                        (owner["owner_id"], now - owner["retention_days"] * 86400),
-                    )
-                    if deleted.rowcount:
+                    deleted = self.repository.expire_messages(owner["owner_id"], now - owner["retention_days"] * 86400)
+                    if deleted:
                         self.invalidate_export(owner["owner_id"])
                 if owner["auto_delete_disconnected"]:
-                    deleted = self.repository.db.execute(
-                        "DELETE FROM archive_chats WHERE owner_id=? AND connection_id IN (SELECT connection_id FROM archive_connection_details WHERE owner_id=? AND enabled=0 AND disconnected_at<?)",
-                        (owner["owner_id"], owner["owner_id"], now - 7 * 86400),
-                    )
-                    if deleted.rowcount:
+                    deleted = self.repository.clear_disconnected(owner["owner_id"], now - 7 * 86400)
+                    if deleted:
                         self.invalidate_export(owner["owner_id"])
             self.repository.db.execute(
-                "DELETE FROM archive_tasks WHERE status IN ('done','failed','uncertain') AND updated_at<?",
+                "DELETE FROM archive_tasks WHERE status IN ('done','failed','uncertain','cancelled') AND updated_at<?",
                 (now - 7 * 86400,),
             )
         known = {

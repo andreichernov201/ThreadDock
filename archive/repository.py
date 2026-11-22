@@ -125,6 +125,7 @@ class ArchiveRepository:
                 )
             }
             self.db.execute("DELETE FROM archive_messages WHERE sender_id=?", (sender_id,))
+            self.db.execute("DELETE FROM archive_stat_messages WHERE sender_id=?", (sender_id,))
         return owners
 
     def public_owner(self, owner_id: int) -> dict:
@@ -315,7 +316,13 @@ class ArchiveRepository:
                 "SELECT * FROM archive_chats WHERE owner_id=? AND connection_id=? AND telegram_id=?",
                 (owner_id, connection_id, source_chat_id),
             ).fetchone()
-            if chat["excluded"]:
+            if (
+                chat["excluded"]
+                or self.db.execute(
+                    "SELECT 1 FROM archive_stat_messages WHERE chat_id=? AND telegram_id=?",
+                    (chat["id"], telegram_id),
+                ).fetchone()
+            ):
                 return None
             if (chat["title"], chat["username"]) != (title, username):
                 self._event(
@@ -551,6 +558,22 @@ class ArchiveRepository:
                 if row and row["deleted_at"]:
                     continue
                 if row is None:
+                    stat = self.db.execute(
+                        "SELECT id,deleted_at FROM archive_stat_messages WHERE chat_id=? AND telegram_id=?",
+                        (chat["id"], telegram_id),
+                    ).fetchone()
+                    if stat:
+                        if stat["deleted_at"] is None:
+                            self.db.execute(
+                                "UPDATE archive_stat_messages SET deleted_at=? WHERE id=?", (now, stat["id"])
+                            )
+                            self.db.execute(
+                                """INSERT INTO archive_stat_events(owner_id,chat_id,message_id,kind,occurred_at)
+                                VALUES (?,?,?,'unknown_deleted',?)""",
+                                (owner_id, chat["id"], stat["id"], now),
+                            )
+                            count += 1
+                        continue
                     if self.author_excluded(source_chat_id):
                         continue
                     cursor = self.db.execute(
@@ -793,8 +816,8 @@ class ArchiveRepository:
 
     def purge_message(self, owner_id: int, identifier: int) -> None:
         with self.db:
-            result = self.db.execute("DELETE FROM archive_messages WHERE owner_id=? AND id=?", (owner_id, identifier))
-        if not result.rowcount:
+            count = self._clear_messages(owner_id, "m.id=?", (identifier,))
+        if not count:
             raise LookupError("Message not found")
 
     def media(self, owner_id: int, identifier: str) -> dict | None:
@@ -958,14 +981,113 @@ class ArchiveRepository:
         if not self.chat(owner_id, chat_id):
             raise LookupError("Chat not found")
         with self.db:
-            self.db.execute(
-                "DELETE FROM archive_messages WHERE owner_id=? AND chat_id=? AND sent_at>=?", (owner_id, chat_id, since)
-            )
-            self.db.execute(
-                "DELETE FROM archive_events WHERE owner_id=? AND chat_id=? AND message_id IS NULL", (owner_id, chat_id)
-            )
+            self._clear_messages(owner_id, "m.chat_id=? AND m.sent_at>=?", (chat_id, since))
+            self._clear_chat_events(owner_id, "e.chat_id=? AND e.occurred_at>=?", (chat_id, since))
             if exclude:
                 self.db.execute("UPDATE archive_chats SET excluded=1 WHERE owner_id=? AND id=?", (owner_id, chat_id))
+
+    def clear_history(self, owner_id: int) -> None:
+        with self.db:
+            self._clear_messages(owner_id, "1", ())
+            self._clear_chat_events(owner_id, "1", ())
+
+    def expire_messages(self, owner_id: int, before: float) -> int:
+        return self._clear_messages(owner_id, "m.favorite=0 AND m.sent_at<?", (before,))
+
+    def clear_disconnected(self, owner_id: int, before: float) -> int:
+        disconnected = """SELECT c.id FROM archive_chats c JOIN archive_connection_details d
+        ON c.connection_id=d.connection_id AND c.owner_id=d.owner_id
+        WHERE d.owner_id=? AND d.enabled=0 AND d.disconnected_at<?"""
+        count = self._clear_messages(owner_id, f"m.chat_id IN ({disconnected})", (owner_id, before))
+        self._clear_chat_events(owner_id, f"e.chat_id IN ({disconnected})", (owner_id, before))
+        return count
+
+    def _clear_messages(self, owner_id: int, condition: str, params: tuple) -> int:
+        """Move only numeric statistics before cascading removal of archived content."""
+        where = f"m.owner_id=? AND ({condition})"
+        params = (owner_id, *params)
+        self.db.execute(
+            f"""INSERT INTO archive_stat_messages(owner_id,chat_id,telegram_id,sender_id,sent_at,deleted_at,
+                edited,outgoing,characters,has_link,has_reply,without_text)
+            SELECT m.owner_id,m.chat_id,m.telegram_id,m.sender_id,m.sent_at,m.deleted_at,m.edited_at IS NOT NULL,
+                m.outgoing,length(m.body),(m.body LIKE '%http://%' OR m.body LIKE '%https://%'),m.reply_to IS NOT NULL,m.body=''
+            FROM archive_messages m LEFT JOIN archive_statistics_resets r ON r.owner_id=m.owner_id
+            WHERE {where} AND (r.reset_at IS NULL OR m.sent_at>=r.reset_at)""",
+            params,
+        )
+        source = "JOIN archive_stat_messages s ON s.chat_id=m.chat_id AND s.telegram_id=m.telegram_id"
+        self.db.execute(
+            f"""INSERT INTO archive_stat_events(owner_id,chat_id,message_id,kind,occurred_at)
+            SELECT e.owner_id,e.chat_id,s.id,e.kind,e.occurred_at FROM archive_messages m
+            {source} JOIN archive_events e ON e.message_id=m.id WHERE {where} AND e.kind!='new'""",
+            params,
+        )
+        self.db.execute(
+            f"""INSERT INTO archive_stat_media(message_id,kind,files,declared_bytes)
+            SELECT s.id,a.kind,count(*),sum(a.size) FROM archive_messages m
+            {source} JOIN archive_media a ON a.message_id=m.id WHERE {where} GROUP BY s.id,a.kind""",
+            params,
+        )
+        return self.db.execute(f"DELETE FROM archive_messages AS m WHERE {where}", params).rowcount
+
+    def _clear_chat_events(self, owner_id: int, condition: str, params: tuple) -> None:
+        where = f"e.owner_id=? AND e.message_id IS NULL AND ({condition})"
+        params = (owner_id, *params)
+        self.db.execute(
+            f"""INSERT INTO archive_stat_events(owner_id,chat_id,kind,occurred_at)
+            SELECT e.owner_id,e.chat_id,e.kind,e.occurred_at FROM archive_events e
+            LEFT JOIN archive_statistics_resets r ON r.owner_id=e.owner_id
+            WHERE {where} AND (r.reset_at IS NULL OR e.occurred_at>=r.reset_at)""",
+            params,
+        )
+        self.db.execute(f"DELETE FROM archive_events AS e WHERE {where}", params)
+
+    def reset_statistics(self, owner_id: int) -> None:
+        with self.db:
+            self.db.execute(
+                """UPDATE archive_tasks SET status='cancelled',error_code='statistics_reset',updated_at=?
+                WHERE owner_id=? AND kind='rebuild_statistics' AND status IN ('pending','running')""",
+                (time.time(), owner_id),
+            )
+            self.db.execute("DELETE FROM archive_stat_events WHERE owner_id=?", (owner_id,))
+            self.db.execute("DELETE FROM archive_stat_messages WHERE owner_id=?", (owner_id,))
+            self.db.execute(
+                "INSERT OR REPLACE INTO archive_statistics_resets(owner_id,reset_at) VALUES (?,?)",
+                (owner_id, time.time()),
+            )
+
+    def request_statistics_rebuild(self, owner_id: int) -> int:
+        with self.db:
+            active = self.db.execute(
+                """SELECT id FROM archive_tasks WHERE owner_id=? AND kind='rebuild_statistics'
+                AND status IN ('pending','running') LIMIT 1""",
+                (owner_id,),
+            ).fetchone()
+            return active["id"] if active else self._enqueue(owner_id, "rebuild_statistics", {})
+
+    def rebuild_statistics_batch(self, owner_id: int, task_id: int, *, limit: int = 500) -> bool:
+        """Bring an older batch of saved messages back into statistics."""
+        with self.db:
+            active = self.db.execute(
+                """SELECT r.reset_at FROM archive_tasks t JOIN archive_statistics_resets r ON t.owner_id=r.owner_id
+                WHERE t.id=? AND t.owner_id=? AND t.kind='rebuild_statistics' AND t.status='running'""",
+                (task_id, owner_id),
+            ).fetchone()
+            if active is None:
+                return False
+            oldest = self.db.execute(
+                """SELECT min(sent_at) FROM (SELECT sent_at FROM archive_messages
+                WHERE owner_id=? AND sent_at<? ORDER BY sent_at DESC LIMIT ?)""",
+                (owner_id, active["reset_at"], limit),
+            ).fetchone()[0]
+            if oldest is None:
+                self.db.execute("DELETE FROM archive_statistics_resets WHERE owner_id=?", (owner_id,))
+                return False
+            self.db.execute(
+                "UPDATE archive_statistics_resets SET reset_at=? WHERE owner_id=?",
+                (oldest, owner_id),
+            )
+            return True
 
     def purge_owner(self, owner_id: int) -> None:
         with self.db:

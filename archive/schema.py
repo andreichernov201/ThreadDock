@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS archive_messages (
  UNIQUE(chat_id,telegram_id)
 );
 CREATE INDEX IF NOT EXISTS archive_messages_chat ON archive_messages(owner_id,chat_id,sent_at,id);
+CREATE INDEX IF NOT EXISTS archive_messages_statistics ON archive_messages(owner_id,sent_at);
 CREATE TABLE IF NOT EXISTS archive_versions (
  id INTEGER PRIMARY KEY, owner_id INTEGER NOT NULL REFERENCES archive_owners(owner_id) ON DELETE CASCADE,
  message_id INTEGER NOT NULL REFERENCES archive_messages(id) ON DELETE CASCADE,
@@ -67,6 +68,7 @@ CREATE TABLE IF NOT EXISTS archive_events (
 );
 CREATE INDEX IF NOT EXISTS archive_events_owner ON archive_events(owner_id,occurred_at,id);
 CREATE INDEX IF NOT EXISTS archive_events_chat ON archive_events(owner_id,chat_id,occurred_at,id);
+CREATE INDEX IF NOT EXISTS archive_events_message ON archive_events(message_id);
 CREATE TABLE IF NOT EXISTS archive_tasks (
  id INTEGER PRIMARY KEY, owner_id INTEGER NOT NULL REFERENCES archive_owners(owner_id) ON DELETE CASCADE,
  kind TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
@@ -114,6 +116,57 @@ CREATE TABLE IF NOT EXISTS archive_errors (
  id INTEGER PRIMARY KEY, code TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 1,
  last_at REAL NOT NULL, UNIQUE(code)
 );
+CREATE TABLE IF NOT EXISTS archive_statistics_resets (
+ owner_id INTEGER PRIMARY KEY REFERENCES archive_owners(owner_id) ON DELETE CASCADE,
+ reset_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS archive_stat_messages (
+ id INTEGER PRIMARY KEY, owner_id INTEGER NOT NULL REFERENCES archive_owners(owner_id) ON DELETE CASCADE,
+ chat_id INTEGER NOT NULL REFERENCES archive_chats(id) ON DELETE CASCADE, telegram_id INTEGER NOT NULL,
+ sender_id INTEGER, sent_at REAL NOT NULL, deleted_at REAL, edited INTEGER NOT NULL, outgoing INTEGER NOT NULL,
+ characters INTEGER NOT NULL, has_link INTEGER NOT NULL, has_reply INTEGER NOT NULL, without_text INTEGER NOT NULL,
+ UNIQUE(chat_id,telegram_id)
+);
+CREATE INDEX IF NOT EXISTS archive_stat_messages_owner ON archive_stat_messages(owner_id,sent_at);
+CREATE INDEX IF NOT EXISTS archive_stat_messages_sender ON archive_stat_messages(sender_id);
+CREATE TABLE IF NOT EXISTS archive_stat_events (
+ owner_id INTEGER NOT NULL REFERENCES archive_owners(owner_id) ON DELETE CASCADE,
+ chat_id INTEGER NOT NULL REFERENCES archive_chats(id) ON DELETE CASCADE,
+ message_id INTEGER REFERENCES archive_stat_messages(id) ON DELETE CASCADE,
+ kind TEXT NOT NULL, occurred_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS archive_stat_events_owner ON archive_stat_events(owner_id,occurred_at);
+CREATE INDEX IF NOT EXISTS archive_stat_events_message ON archive_stat_events(message_id);
+CREATE TABLE IF NOT EXISTS archive_stat_media (
+ message_id INTEGER NOT NULL REFERENCES archive_stat_messages(id) ON DELETE CASCADE,
+ kind TEXT NOT NULL, files INTEGER NOT NULL, declared_bytes INTEGER NOT NULL,
+ PRIMARY KEY(message_id,kind)
+);
+CREATE VIEW IF NOT EXISTS archive_message_statistics AS
+ SELECT m.owner_id,m.chat_id,m.telegram_id,m.sent_at,m.deleted_at,m.edited_at IS NOT NULL AS edited,m.outgoing,
+        length(m.body) AS characters,(m.body LIKE '%http://%' OR m.body LIKE '%https://%') AS has_link,
+        m.reply_to IS NOT NULL AS has_reply,m.body='' AS without_text,m.favorite,m.body
+ FROM archive_messages m LEFT JOIN archive_statistics_resets r ON r.owner_id=m.owner_id
+ WHERE r.reset_at IS NULL OR m.sent_at>=r.reset_at
+ UNION ALL
+ SELECT owner_id,chat_id,telegram_id,sent_at,deleted_at,edited,outgoing,characters,has_link,has_reply,
+        without_text,0,NULL FROM archive_stat_messages;
+CREATE VIEW IF NOT EXISTS archive_event_statistics AS
+ SELECT e.owner_id,e.chat_id,e.kind,e.occurred_at FROM archive_events e
+ LEFT JOIN archive_messages m ON m.id=e.message_id
+ LEFT JOIN archive_statistics_resets r ON r.owner_id=e.owner_id
+ WHERE e.kind!='new' AND (r.reset_at IS NULL OR coalesce(m.sent_at,e.occurred_at)>=r.reset_at)
+ UNION ALL
+ SELECT owner_id,chat_id,kind,occurred_at FROM archive_stat_events;
+CREATE VIEW IF NOT EXISTS archive_media_statistics AS
+ SELECT m.owner_id,m.chat_id,m.sent_at,a.kind,1 AS files,a.size AS declared_bytes,
+        a.status='ready' AS saved_files,CASE WHEN a.status='ready' THEN a.size ELSE 0 END AS saved_bytes
+ FROM archive_media a JOIN archive_messages m ON m.id=a.message_id AND m.owner_id=a.owner_id
+ LEFT JOIN archive_statistics_resets r ON r.owner_id=m.owner_id
+ WHERE r.reset_at IS NULL OR m.sent_at>=r.reset_at
+ UNION ALL
+ SELECT m.owner_id,m.chat_id,m.sent_at,a.kind,a.files,a.declared_bytes,0,0
+ FROM archive_stat_media a JOIN archive_stat_messages m ON m.id=a.message_id;
 PRAGMA user_version = 2;
 """
 

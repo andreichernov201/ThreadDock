@@ -916,7 +916,13 @@ function renderSettings() {
       e(t(COPY.YOUR_DATA)),
       e(t(COPY.EXPORT)),
       e(t(COPY.DELETE_ALL_ARCHIVE_DATA)),
-      (deletion?.vault_pending || deletion?.vault_manual
+      fill(
+        COPY.STATISTICS_MANAGEMENT,
+        e(t(COPY.STATISTICS)),
+        e(t(COPY.STATISTICS_MANAGEMENT_HINT)),
+        e(t(COPY.REBUILD_STATISTICS)),
+        e(t(COPY.RESET_STATISTICS)),
+      ) + (deletion?.vault_pending || deletion?.vault_manual
         ? `<section class="panel setting-card"><h2>${
           e(t(COPY.OPERATOR_CLEANUP))
         }</h2><p>${
@@ -926,7 +932,9 @@ function renderSettings() {
             fmt(deletion.vault_manual),
           ))
         }</p></section>`
-        : "") + (S.meta.operator ? COPY.OPERATOR_CARD : ""),
+        : "") +
+        (S.meta.operator ? COPY.OPERATOR_CARD : ""),
+      e(t(COPY.CLEAR_ARCHIVE_HISTORY)),
     ),
   );
 }
@@ -1161,20 +1169,24 @@ function pinModal() {
     ),
   );
 }
-function deleteModal(all = false, id = 0) {
+function deleteModal(kind, id = 0) {
+  const hints = {
+    all: COPY.DELETE_ACCOUNT_HINT,
+    history: COPY.CLEAR_HISTORY_HINT,
+    stats: COPY.RESET_STATISTICS_HINT,
+    message: COPY.DELETE_MESSAGE_HINT,
+    chat: COPY.DELETE_CHAT_HINT,
+  };
   openModal(
     COPY.PERMANENT_DELETION,
     fill(
       COPY.DELETEMODAL_TEMPLATE,
-      all ? "1" : "0",
+      kind,
       id,
-      all
-        ? COPY.DELETE_ACCOUNT_HINT
-        : id
-        ? COPY.DELETE_MESSAGE_HINT
-        : COPY.DELETE_CHAT_HINT,
-      !all && !id ? COPY.DELETE_CHAT_OPTIONS : "",
+      e(t(hints[kind])),
+      kind === "chat" ? COPY.DELETE_CHAT_OPTIONS : "",
       e(t(COPY.CONTINUE)),
+      kind === "stats" ? "" : `<p>${e(t(COPY.VAULT_DELETION_HINT))}</p>`,
     ),
   );
 }
@@ -1266,6 +1278,7 @@ async function trackTask(id) {
     await new Promise((resolve) => setTimeout(resolve, 2000));
     try {
       const job = await api.request(`/api/tasks/${id}`);
+      if (job.status === "cancelled") return;
       if (job.status === "done") {
         toast(COPY.DONE);
         return;
@@ -1400,10 +1413,20 @@ document.addEventListener("click", async (event) => {
     else if (action === "enroll-bio") await enrollBiometric();
     else if (action === "unlock-bio") await unlockBiometric();
     else if (action === "chat-settings") chatSettings();
-    else if (action === "delete-all") deleteModal(true);
-    else if (action === "delete-chat") deleteModal();
+    else if (action === "delete-all") deleteModal("all");
+    else if (action === "delete-history") deleteModal("history");
+    else if (action === "delete-stats") deleteModal("stats");
+    else if (action === "rebuild-stats") {
+      button.disabled = true;
+      try {
+        await queue("/api/stats/rebuild", {}, true);
+        if (S.view === "stats" && !S.locked) await load();
+      } finally {
+        button.disabled = false;
+      }
+    } else if (action === "delete-chat") deleteModal("chat");
     else if (action === "delete-message") {
-      deleteModal(false, Number(button.dataset.id));
+      deleteModal("message", Number(button.dataset.id));
     } else if (action === "media") await previewMedia(button.dataset.id);
     else if (action === "send-media") {
       button.disabled = true;
@@ -1602,13 +1625,14 @@ document.addEventListener("submit", async (event) => {
       await bootstrap();
       toast(COPY.SETTINGS_SAVED);
     } else if (form.id === "delete-form") {
-      const all = form.dataset.all === "1",
-        message = Number(form.dataset.message),
-        path = all
-          ? "/api/delete-me"
-          : message
-          ? `/api/messages/${message}/delete`
-          : `/api/chats/${S.chat}/delete`;
+      const kind = form.dataset.kind;
+      const path = {
+        all: "/api/delete-me",
+        history: "/api/history/delete",
+        stats: "/api/stats/delete",
+        message: `/api/messages/${Number(form.dataset.message)}/delete`,
+        chat: `/api/chats/${S.chat}/delete`,
+      }[kind];
       const result = await api.request(path, {
         method: "POST",
         body: {
@@ -1618,12 +1642,18 @@ document.addEventListener("submit", async (event) => {
         },
       });
       modal.close();
+      if (kind === "stats") {
+        S.stats = null;
+        await load();
+        toast(COPY.STATISTICS_RESET_DONE);
+        return;
+      }
       const status = fill(
         COPY.VAULT_DELETION_STATUS,
         fmt(result.vault_pending || 0),
         fmt(result.vault_manual || 0),
       );
-      if (all) {
+      if (kind === "all") {
         S.token = "";
         S.csrf = "";
         clearPrivate();
