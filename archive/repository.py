@@ -8,6 +8,7 @@ import time
 import uuid
 
 from archive.auth import new_token, token_hash
+from archive.config import PREFETCH_TTL
 from archive.content import keyword_matches, visible_content, word_diff
 from archive.schema import DEFAULT_MEDIA_TYPES, DEFAULT_MEDIA_TYPES_JSON, migrate
 from core import texts as T
@@ -457,9 +458,10 @@ class ArchiveRepository:
                 )
                 if not captured_from_reply and not special and item["kind"] in owner["media_types"]:
                     staged = self.db.execute(
-                        """SELECT id FROM archive_media WHERE message_id=? AND unique_id=? AND kind=?
-                        AND status='staged' AND local_path IS NULL""",
-                        (message_id, item["unique_id"], item["kind"]),
+                        """SELECT a.id FROM archive_media a WHERE a.message_id=? AND a.unique_id=? AND a.kind=?
+                        AND a.status='staged' AND a.local_path IS NULL AND a.created_at>?
+                        AND NOT EXISTS (SELECT 1 FROM archive_media_cache p WHERE p.media_id=a.id)""",
+                        (message_id, item["unique_id"], item["kind"], now - PREFETCH_TTL),
                     ).fetchone()
                     if staged:
                         self._enqueue(owner_id, "prefetch", {"media_id": staged[0]}, f"prefetch:{staged[0]}")
@@ -621,9 +623,14 @@ class ArchiveRepository:
             "SELECT id,kind FROM archive_media WHERE owner_id=? AND message_id=? AND status='staged'",
             (owner_id, message_id),
         ).fetchall()
+        now = time.time()
         for row in rows:
             if row["kind"] in media_types:
                 self.db.execute("UPDATE archive_media SET status='pending' WHERE id=?", (row["id"],))
+                self.db.execute(
+                    "UPDATE archive_media_cache SET pinned=1 WHERE media_id=? AND expires_at>?",
+                    (row["id"], now),
+                )
                 self._enqueue(owner_id, "media", {"media_id": row["id"], "urgent": urgent}, f"media:{row['id']}")
 
     def stage_untriggered_media(self) -> list[str]:
@@ -751,9 +758,31 @@ class ArchiveRepository:
             item["media"] = self.media_for_message(owner_id, item["id"])
         return {"items": selected, "next_cursor": selected[-1]["id"] if len(rows) > limit else None}
 
-    def events(self, owner_id: int, *, cursor: int = 0, kind: str = "all", chat_id: int = 0, limit: int = 50) -> dict:
-        where = "e.owner_id=? AND (?=0 OR e.id<?) AND (?=0 OR e.chat_id=?)"
-        values = [owner_id, cursor, cursor, chat_id, chat_id]
+    def events(
+        self,
+        owner_id: int,
+        *,
+        cursor: int = 0,
+        before: float | None = None,
+        kind: str = "all",
+        chat_id: int = 0,
+        limit: int = 50,
+    ) -> dict:
+        where = "e.owner_id=? AND (?=0 OR e.chat_id=?)"
+        values = [owner_id, chat_id, chat_id]
+        if cursor and before is None:
+            anchor = self.db.execute(
+                "SELECT occurred_at FROM archive_events WHERE owner_id=? AND id=? AND (?=0 OR chat_id=?)",
+                (owner_id, cursor, chat_id, chat_id),
+            ).fetchone()
+            if anchor:
+                before = anchor["occurred_at"]
+        if cursor and before is not None:
+            where += " AND (e.occurred_at,e.id)<(?,?)"
+            values.extend((before, cursor))
+        elif cursor:
+            where += " AND e.id<?"
+            values.append(cursor)
         if kind == "favorites":
             where += f" AND m.favorite=1 AND e.kind IN {RECORD_KINDS}"
         elif kind == "all":
@@ -765,7 +794,7 @@ class ArchiveRepository:
             if kind != "deleted":
                 values.append(kind)
         rows = self.db.execute(
-            f"SELECT e.*,c.title AS chat_title,c.username,coalesce(v.body,m.body) AS body,m.favorite,m.outgoing FROM archive_events e JOIN archive_chats c ON c.id=e.chat_id LEFT JOIN archive_messages m ON m.id=e.message_id LEFT JOIN archive_versions v ON v.id=e.version_id WHERE {where} ORDER BY e.id DESC LIMIT ?",
+            f"SELECT e.*,c.title AS chat_title,c.username,coalesce(v.body,m.body) AS body,m.favorite,m.outgoing FROM archive_events e JOIN archive_chats c ON c.id=e.chat_id LEFT JOIN archive_messages m ON m.id=e.message_id LEFT JOIN archive_versions v ON v.id=e.version_id WHERE {where} ORDER BY e.occurred_at DESC,e.id DESC LIMIT ?",
             (*values, limit + 1),
         ).fetchall()
         items = [{**dict(row), "payload": json.loads(row["payload"])} for row in rows[:limit]]
@@ -777,7 +806,13 @@ class ArchiveRepository:
             )
         }
         counts["deleted"] = counts.get("deleted", 0) + counts.pop("unknown_deleted", 0)
-        return {"items": items, "next_cursor": items[-1]["id"] if len(rows) > limit else None, "counts": counts}
+        tail = items[-1] if len(rows) > limit else None
+        return {
+            "items": items,
+            "next_cursor": tail["id"] if tail else None,
+            "next_before": tail["occurred_at"] if tail else None,
+            "counts": counts,
+        }
 
     def search(
         self,
@@ -808,7 +843,9 @@ class ArchiveRepository:
         if events_only:
             where += f" AND {RETAINED_MESSAGE}"
         rows = self.db.execute(
-            f"""SELECT m.*,c.title AS chat_title,v.body AS match_text FROM archive_messages m
+            f"""SELECT m.*,c.title AS chat_title,v.body AS match_text,
+              (SELECT group_concat(json_extract(a.value,'$.filename'),', ')
+               FROM json_each(v.payload,'$.media') a) AS match_filenames FROM archive_messages m
             JOIN archive_chats c ON c.id=m.chat_id JOIN archive_versions v ON v.id=(
               SELECT max(s.rowid) FROM archive_search s WHERE archive_search MATCH ?
               AND s.owner_id=? AND s.message_id=m.id)
@@ -836,7 +873,11 @@ class ArchiveRepository:
     def media(self, owner_id: int, identifier: str) -> dict | None:
         return _dict(
             self.db.execute(
-                f"SELECT a.*,m.chat_id,c.topic_id,c.telegram_id AS source_chat_id,c.title AS chat_title,c.connection_id FROM archive_media a JOIN archive_messages m ON m.id=a.message_id JOIN archive_chats c ON c.id=m.chat_id WHERE a.owner_id=? AND a.id=? AND a.status!='staged' AND {RETAINED_MESSAGE}",
+                f"""SELECT a.*,m.chat_id,c.topic_id,c.telegram_id AS source_chat_id,c.title AS chat_title,c.connection_id,
+                p.pinned AS cache_pinned,p.expires_at AS cache_expires_at
+                FROM archive_media a JOIN archive_messages m ON m.id=a.message_id
+                JOIN archive_chats c ON c.id=m.chat_id LEFT JOIN archive_media_cache p ON p.media_id=a.id
+                WHERE a.owner_id=? AND a.id=? AND a.status!='staged' AND {RETAINED_MESSAGE}""",
                 (owner_id, identifier),
             ).fetchone()
         )
@@ -844,7 +885,9 @@ class ArchiveRepository:
     def staged_media(self, owner_id: int, identifier: str) -> dict | None:
         return _dict(
             self.db.execute(
-                "SELECT * FROM archive_media WHERE owner_id=? AND id=? AND status='staged'",
+                """SELECT a.*,p.size AS cached_size FROM archive_media a
+                LEFT JOIN archive_media_cache p ON p.media_id=a.id
+                WHERE a.owner_id=? AND a.id=? AND a.status='staged'""",
                 (owner_id, identifier),
             ).fetchone()
         )

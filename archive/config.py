@@ -4,6 +4,8 @@ from urllib.parse import urlsplit
 
 from core import texts as T
 
+PREFETCH_TTL = 3 * 86400
+
 
 @dataclass(frozen=True)
 class ArchiveSettings:

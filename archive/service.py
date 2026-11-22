@@ -21,7 +21,7 @@ from aiogram.exceptions import (
 )
 from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
 
-from archive.config import ArchiveSettings
+from archive.config import PREFETCH_TTL, ArchiveSettings
 from archive.content import message_payload, visible_content
 from archive.exports import bundle_export, write_export
 from archive.repository import RETAINED_MESSAGE, ArchiveRepository
@@ -63,7 +63,8 @@ class ArchiveService:
         self.repository = ArchiveRepository(database)
         self.root = settings.data_dir / "archive"
         self.blobs, self.exports, self.uploads = (self.root / name for name in ("blobs", "exports", "uploads"))
-        for path in (self.blobs, self.exports, self.uploads):
+        self.prefetch_cache = self.root / "cache"
+        for path in (self.blobs, self.exports, self.uploads, self.prefetch_cache):
             path.mkdir(parents=True, exist_ok=True)
         self.stopping = asyncio.Event()
         self.task: asyncio.Task | None = None
@@ -198,6 +199,8 @@ class ArchiveService:
         removed = self.repository.stage_untriggered_media()
         for relative_path in removed:
             self.safe_path(relative_path, self.blobs).unlink(missing_ok=True)
+        self._migrate_legacy_prefetch()
+        self._maintain_prefetch_cache(time.time(), reconcile=True)
         cancelled = self.repository.retire_caption_downloads()
         logger.info("archive_policy retired_blobs=%s cancelled_caption_jobs=%s", len(removed), cancelled)
         self.repository.recover()
@@ -448,11 +451,14 @@ class ArchiveService:
         }.get(rows[0]["kind"], "")
         if len(rows) > 1:
             reason = T.ARCHIVE_REASON_DELETED_BATCH.format(count=len(rows))
+        previous = None
+        if rows[0]["kind"] == "edited":
+            row = rows[0]
+            previous = self.repository.previous_version(owner["owner_id"], row["message_id"], row["version_id"])
+            reason = T.ARCHIVE_REASON_EDITED if previous else T.ARCHIVE_REASON_EDIT_WITHOUT_ORIGINAL
         if reason:
             text += "\n" + html.escape(reason)
         if not owner["hide_content"] and rows[0]["kind"] == "edited":
-            row = rows[0]
-            previous = self.repository.previous_version(owner["owner_id"], row["message_id"], row["version_id"])
             start = 0
             if previous and previous["body"] != row["body"]:
                 common = os.path.commonprefix((previous["body"].strip(), row["body"].strip()))
@@ -534,21 +540,20 @@ class ArchiveService:
         media = lookup(owner["owner_id"], task["payload"]["media_id"])
         if not media or media["kind"] not in owner["media_types"]:
             return
+        if prefetch:
+            if media["cached_size"] is not None or media["created_at"] <= time.time() - PREFETCH_TTL:
+                return
+        elif media["cache_pinned"]:
+            self._promote_prefetched(media)
+            media = lookup(owner["owner_id"], media["id"])
+        elif media["cache_expires_at"] is not None and media["cache_expires_at"] <= time.time():
+            self._discard_prefetch(media)
         if media["size"] <= self.config.media_download_bytes and not media["local_path"]:
-            stored_bytes = self.repository.db.execute(
-                "SELECT coalesce(sum(size),0) FROM archive_media WHERE local_path IS NOT NULL"
-            ).fetchone()[0]
-            free = shutil.disk_usage(self.root).free
-            budget = min(
-                self.config.media_download_bytes,
-                self.config.storage_bytes - stored_bytes - self._reserved_bytes,
-                free - self.settings.min_free_bytes - self._reserved_bytes,
-            )
+            budget = self._archive_download_budget(media["size"], prefetch)
             reserved = min(budget, media["size"] or self.config.media_download_bytes)
             if budget > 0 and budget >= media["size"]:
-                folder = self.blobs / str(owner["owner_id"])
-                folder.mkdir(parents=True, exist_ok=True)
-                path = folder / media["id"]
+                path = self._media_path(media, self.prefetch_cache if prefetch else self.blobs)
+                path.parent.mkdir(parents=True, exist_ok=True)
                 partial = path.with_suffix(".part")
                 self._reserved_bytes += reserved
                 try:
@@ -558,23 +563,17 @@ class ArchiveService:
                             destination=LimitedWriter(output, reserved),
                             timeout=30 if task["payload"].get("urgent") else 60,
                         )
-                    if (
-                        self.repository.staged_media(owner["owner_id"], media["id"]) is None
-                        and self.repository.media(owner["owner_id"], media["id"]) is None
-                    ):
-                        return
-                    partial.replace(path)
-                    with self.repository.db:
-                        self.repository.db.execute(
-                            """UPDATE archive_media SET local_path=?,size=?,status=CASE WHEN status='staged' THEN status
-                            ELSE 'ready' END WHERE owner_id=? AND id=?""",
-                            (
-                                path.relative_to(self.root).as_posix(),
-                                path.stat().st_size,
-                                owner["owner_id"],
-                                media["id"],
-                            ),
-                        )
+                    # An event or an opt-out may have arrived while the file was downloading.
+                    current = self.repository.media(owner["owner_id"], media["id"])
+                    if current:
+                        self._store_archive_file(current, partial)
+                    elif prefetch and self.repository.staged_media(owner["owner_id"], media["id"]):
+                        partial.replace(path)
+                        with self.repository.db:
+                            self.repository.db.execute(
+                                "INSERT INTO archive_media_cache(media_id,size,expires_at) VALUES (?,?,?)",
+                                (media["id"], path.stat().st_size, time.time() + PREFETCH_TTL),
+                            )
                 except (TelegramBadRequest, TelegramForbiddenError, MediaError, OSError) as error:
                     code = "get_file_rejected" if isinstance(error, TelegramAPIError) else type(error).__name__
                     self.repository.record_error(f"archive_media:{code}")
@@ -598,6 +597,94 @@ class ArchiveService:
         ):
             if current := self.repository.media(owner["owner_id"], media["id"]):
                 await self._copy_to_vault(task, owner, current)
+
+    def _archive_download_budget(self, size: int, prefetch: bool) -> int:
+        stored = self.repository.db.execute(
+            """SELECT (SELECT coalesce(sum(size),0) FROM archive_media WHERE local_path IS NOT NULL)
+            + (SELECT coalesce(sum(size),0) FROM archive_media_cache)"""
+        ).fetchone()[0]
+        free = shutil.disk_usage(self.root).free
+        available = min(self.config.storage_bytes - stored, free - self.settings.min_free_bytes) - self._reserved_bytes
+        required = size or self.config.media_download_bytes
+        if prefetch or available >= required:
+            return min(available, self.config.media_download_bytes)
+        candidates = self.repository.db.execute(
+            """SELECT a.owner_id,a.id,p.size FROM archive_media_cache p JOIN archive_media a ON a.id=p.media_id
+            WHERE p.pinned=0 ORDER BY p.expires_at,p.media_id"""
+        ).fetchall()
+        for row in candidates:
+            if row["id"] in self._media_in_flight:
+                continue
+            try:
+                self._discard_prefetch(row)
+            except OSError:
+                logger.warning("archive_cache eviction_failed media=%s", row["id"], exc_info=True)
+                continue
+            stored -= row["size"]
+            free = shutil.disk_usage(self.root).free
+            available = (
+                min(self.config.storage_bytes - stored, free - self.settings.min_free_bytes) - self._reserved_bytes
+            )
+            if available >= required:
+                break
+        return min(available, self.config.media_download_bytes)
+
+    def _media_path(self, media: dict, parent: Path) -> Path:
+        relative = parent.relative_to(self.root) / str(media["owner_id"]) / media["id"]
+        return self.safe_path(relative, parent)
+
+    def _store_archive_file(self, media: dict, source: Path) -> None:
+        target = self._media_path(media, self.blobs)
+        size = source.stat().st_size
+        if source != target:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source.replace(target)
+        with self.repository.db:
+            self.repository.db.execute(
+                "UPDATE archive_media SET local_path=?,size=?,status='ready' WHERE owner_id=? AND id=?",
+                (target.relative_to(self.root).as_posix(), size, media["owner_id"], media["id"]),
+            )
+            self.repository.db.execute("DELETE FROM archive_media_cache WHERE media_id=?", (media["id"],))
+
+    def _promote_prefetched(self, media: dict) -> None:
+        cached = self._media_path(media, self.prefetch_cache)
+        # Recover a move interrupted between the file rename and the database commit.
+        source = cached if cached.is_file() else self._media_path(media, self.blobs)
+        if source.is_file():
+            self._store_archive_file(media, source)
+        else:
+            with self.repository.db:
+                self.repository.db.execute("DELETE FROM archive_media_cache WHERE media_id=?", (media["id"],))
+
+    def _discard_prefetch(self, media: dict) -> None:
+        self._media_path(media, self.prefetch_cache).unlink(missing_ok=True)
+        with self.repository.db:
+            self.repository.db.execute("DELETE FROM archive_media_cache WHERE media_id=?", (media["id"],))
+
+    def _migrate_legacy_prefetch(self) -> None:
+        rows = self.repository.db.execute(
+            "SELECT id,owner_id,local_path FROM archive_media WHERE status='staged' AND local_path IS NOT NULL"
+        ).fetchall()
+        now = time.time()
+        for media in rows:
+            legacy = self.safe_path(media["local_path"], self.blobs)
+            cached = self._media_path(media, self.prefetch_cache)
+            source = legacy if legacy.is_file() else cached
+            with self.repository.db:
+                if source.is_file():
+                    file = source.stat()
+                    expires = file.st_mtime + PREFETCH_TTL
+                    if expires > now:
+                        if source != cached:
+                            cached.parent.mkdir(parents=True, exist_ok=True)
+                            source.replace(cached)
+                        self.repository.db.execute(
+                            "INSERT OR IGNORE INTO archive_media_cache(media_id,size,expires_at) VALUES (?,?,?)",
+                            (media["id"], file.st_size, expires),
+                        )
+                    else:
+                        source.unlink(missing_ok=True)
+                self.repository.db.execute("UPDATE archive_media SET local_path=NULL WHERE id=?", (media["id"],))
 
     def _media_status(self, media: dict, status: str, prefetch: bool):
         if not prefetch:
@@ -821,15 +908,13 @@ class ArchiveService:
 
     def cleanup_owner_blobs(self, owner_id: int):
         folder = self.blobs / str(owner_id)
-        if not folder.is_dir():
-            return
         known = {
             row[0]
             for row in self.repository.db.execute(
                 "SELECT local_path FROM archive_media WHERE owner_id=? AND local_path IS NOT NULL", (owner_id,)
             )
         }
-        for path in folder.iterdir():
+        for path in folder.glob("*"):
             if (
                 path.is_file()
                 and not path.is_symlink()
@@ -837,6 +922,41 @@ class ArchiveService:
                 and path.stem not in self._media_in_flight
             ):
                 self.safe_path(path.relative_to(self.root).as_posix(), folder).unlink()
+        self._clean_prefetch_orphans(owner_id)
+
+    def _clean_prefetch_orphans(self, owner_id: int | None = None) -> None:
+        query = """SELECT a.owner_id,a.id FROM archive_media_cache p JOIN archive_media a ON a.id=p.media_id
+        WHERE (? IS NULL OR a.owner_id=?)"""
+        known = {(str(row["owner_id"]), row["id"]) for row in self.repository.db.execute(query, (owner_id, owner_id))}
+        paths = self.prefetch_cache.glob("*/*") if owner_id is None else (self.prefetch_cache / str(owner_id)).glob("*")
+        for path in paths:
+            if (
+                not path.is_symlink()
+                and path.is_file()
+                and path.stem not in self._media_in_flight
+                and (path.parent.name, path.name) not in known
+            ):
+                self.safe_path(path.relative_to(self.root), self.prefetch_cache).unlink(missing_ok=True)
+
+    def _maintain_prefetch_cache(self, now: float, *, reconcile: bool = False) -> None:
+        rows = self.repository.db.execute(
+            """SELECT a.owner_id,a.id,p.pinned,p.expires_at FROM archive_media_cache p
+            JOIN archive_media a ON a.id=p.media_id WHERE p.pinned=1 OR p.expires_at<=? OR ?""",
+            (now, reconcile),
+        ).fetchall()
+        for row in rows:
+            if row["id"] in self._media_in_flight:
+                continue
+            try:
+                if row["pinned"] and (media := self.repository.media(row["owner_id"], row["id"])):
+                    self._promote_prefetched(media)
+                elif row["expires_at"] <= now or (
+                    reconcile and not self._media_path(row, self.prefetch_cache).is_file()
+                ):
+                    self._discard_prefetch(row)
+            except OSError:
+                logger.warning("archive_cache maintenance_failed media=%s", row["id"], exc_info=True)
+        self._clean_prefetch_orphans()
 
     async def bind_vault(self, owner_id: int, chat_id: int):
         chat = await self.bot.get_chat(chat_id)
@@ -938,6 +1058,7 @@ class ArchiveService:
                 ))""",
                 (now - 7 * 86400,),
             )
+        self._maintain_prefetch_cache(now)
         known = {
             row[0]
             for row in self.repository.db.execute("SELECT local_path FROM archive_media WHERE local_path IS NOT NULL")

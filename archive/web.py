@@ -328,10 +328,17 @@ def create_web_app(service) -> web.Application:
 
     @routes.get("/api/events")
     async def events(request):
+        try:
+            before = float(request.query["before"]) if "before" in request.query else None
+            if before is not None and not 0 <= before <= 10**11:
+                raise ValueError
+        except ValueError as error:
+            raise ValueError(T.ARCHIVE_WEB_INVALID_QUERY) from error
         return web.json_response(
             repository.events(
                 request["owner"]["owner_id"],
                 cursor=number(request, "cursor"),
+                before=before,
                 kind=request.query.get("kind", "all"),
                 chat_id=number(request, "chat"),
             )

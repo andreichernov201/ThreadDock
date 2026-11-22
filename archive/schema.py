@@ -66,6 +66,11 @@ CREATE TABLE IF NOT EXISTS archive_media (
  vault_message_id INTEGER, created_at REAL NOT NULL, UNIQUE(message_id,unique_id,kind)
 );
 CREATE INDEX IF NOT EXISTS archive_media_owner ON archive_media(owner_id,created_at);
+CREATE TABLE IF NOT EXISTS archive_media_cache (
+ media_id TEXT PRIMARY KEY REFERENCES archive_media(id) ON DELETE CASCADE,
+ size INTEGER NOT NULL, expires_at REAL NOT NULL, pinned INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS archive_media_cache_expiry ON archive_media_cache(pinned,expires_at);
 CREATE TABLE IF NOT EXISTS archive_events (
  id INTEGER PRIMARY KEY, owner_id INTEGER NOT NULL REFERENCES archive_owners(owner_id) ON DELETE CASCADE,
  chat_id INTEGER NOT NULL REFERENCES archive_chats(id) ON DELETE CASCADE,
