@@ -19,6 +19,7 @@ from core import texts as T
 from core.errors import MediaError, MissingAsset
 from core.models import Asset, Destination, Job, MediaBundle
 from services.access import sender_permitted
+from services.comments import comment_caption
 from storage.database import Database
 
 logger = logging.getLogger(__name__)
@@ -91,14 +92,16 @@ class TelegramDelivery:
             buttons.append(InlineKeyboardButton(text=T.SERVICES_DELIVERY_AUDIO, callback_data=f"m:{job.id}:audio"))
         return InlineKeyboardMarkup(inline_keyboard=[buttons]) if buttons else None
 
-    async def _send_piece(self, job: Job, bundle: MediaBundle, assets: tuple[Asset, ...], use_cache: bool):
+    async def _send_piece(self, job: Job, bundle: MediaBundle, assets: tuple[Asset, ...], use_cache: bool, caption=""):
         inputs = [self._input(job, bundle, asset, use_cache=use_cache) for asset in assets]
         options = target_options(job.destination)
+        caption_options = {"caption": comment_caption(caption), "parse_mode": None} if caption else {}
         if len(assets) > 1:
             media = []
-            for asset, value in zip(assets, inputs, strict=True):
+            for index, (asset, value) in enumerate(zip(assets, inputs, strict=True)):
+                item_options = caption_options if index == 0 else {}
                 if asset.kind == "photo":
-                    media.append(InputMediaPhoto(media=value))
+                    media.append(InputMediaPhoto(media=value, **item_options))
                 elif asset.kind == "video":
                     media.append(
                         InputMediaVideo(
@@ -107,12 +110,14 @@ class TelegramDelivery:
                             width=asset.width,
                             height=asset.height,
                             supports_streaming=True,
+                            **item_options,
                         )
                     )
                 else:
-                    media.append(InputMediaDocument(media=value))
+                    media.append(InputMediaDocument(media=value, **item_options))
             return await self.bot.send_media_group(**options, media=media)
         asset, value = assets[0], inputs[0]
+        options.update(caption_options)
         if asset.kind == "video":
             result = await self.bot.send_video(
                 **options,
@@ -159,7 +164,8 @@ class TelegramDelivery:
             self._check_deadline(job)
             self.database.status(job.id, "sending")
             try:
-                messages = await self._send_piece(job, bundle, piece, use_cache=True)
+                caption = bundle.comment if index == 0 and job.mode != "audio" else ""
+                messages = await self._send_piece(job, bundle, piece, use_cache=True, caption=caption)
             except TelegramBadRequest as error:
                 if not is_file_id_error(error):
                     raise
@@ -169,7 +175,7 @@ class TelegramDelivery:
                         self.database.forget_file_id(self.bot.id, job.cache_key, part.filename, part.kind)
                 self._check_deadline(job)
                 self.database.status(job.id, "sending")
-                messages = await self._send_piece(job, bundle, piece, use_cache=False)
+                messages = await self._send_piece(job, bundle, piece, use_cache=False, caption=caption)
             # Save checkpoint before cache writes: a crash must not replay an accepted album.
             self.database.delivered_piece(job.id, index, [message.message_id for message in messages])
             for asset, message in zip(piece, messages, strict=True):

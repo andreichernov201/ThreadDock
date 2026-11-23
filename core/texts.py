@@ -276,6 +276,8 @@ HANDLERS_CALLBACKS_ALREADY_DONE = "Этот файл уже отправлен �
 
 DOWNLOAD_TRY_LATER = "Попробуйте позже."
 DOWNLOAD_TIME_LIMIT = "Не успел скачать. Попробуй ещё раз."
+DOWNLOAD_LIVE_UNSUPPORTED = "Прямые эфиры скачать не получится. Пришли ссылку на обычное видео."
+DOWNLOAD_COMMENT_CAPTION = "💬 {text}"
 DOWNLOAD_UNAVAILABLE = "Пост недоступен."
 DOWNLOAD_FAILED = "Не получилось скачать видео."
 DOWNLOAD_TOO_LARGE = "Видео слишком большое."

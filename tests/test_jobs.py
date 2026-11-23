@@ -26,6 +26,17 @@ class JobTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         await self.queue._process(job)
         self.assertEqual(self.database.get_job(job.id)["status"], "done")
 
+    async def test_live_rejection_is_explained_in_order_without_retry(self):
+        from core import texts as T
+
+        job = self.job()
+        self.pipeline.fetch.side_effect = MediaError("Internal wording", code="live_unsupported")
+        await self.queue._process(job, prepare_only=True)
+        self.delivery.text.assert_not_awaited()
+        await self.queue._deliver_ready(self.database.claim_ready())
+        self.assertEqual(self.delivery.text.call_args.args[1], T.DOWNLOAD_LIVE_UNSUPPORTED)
+        self.assertFalse(self.database.get_job(job.id)["retryable"])
+
     async def test_transient_source_failure_is_requeued(self):
         job = self.job()
         self.pipeline.fetch.side_effect = MediaError("Temporary", code="network", retryable=True)

@@ -76,6 +76,8 @@ class GalleryAdapter:
         if link.platform == "TikTok" and urlsplit(link.url).hostname in {"vm.tiktok.com", "vt.tiktok.com"}:
             response = await self.http.get(link.url, 8 * 1024**2)
             link = normalize_url(response.url)
+            if link.is_live:
+                raise MediaError(T.DOWNLOAD_LIVE_UNSUPPORTED, code="live_unsupported")
             if link.platform != "TikTok":
                 raise MediaError(T.SERVICES_YTDLP_UNAVAILABLE, code="unavailable")
         target, story_id = gallery_target(link)

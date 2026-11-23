@@ -98,6 +98,8 @@ class JobQueue:
             await self._process(job, bundle=bundle)
 
     def _failure_text(self, code: str, retryable: bool) -> str:
+        if code == "live_unsupported":
+            return T.DOWNLOAD_LIVE_UNSUPPORTED
         if code == "request_expired":
             return T.DOWNLOAD_TIME_LIMIT.format(seconds=int(self.settings.request_timeout))
         if code == "internal_error":
