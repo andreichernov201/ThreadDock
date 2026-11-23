@@ -8,6 +8,7 @@ import os
 import shutil
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from threading import Event
 
@@ -133,6 +134,10 @@ class ArchiveService:
                 continue
             if self.repository.author_excluded(item.from_user.id if item.from_user else None):
                 continue
+            sent_at = item.date.timestamp()
+            edited_at = item.edit_date
+            if isinstance(edited_at, datetime):
+                edited_at = edited_at.timestamp()
             self.repository.ingest(
                 owner_id=owner_id,
                 connection_id=message.business_connection_id,
@@ -140,8 +145,8 @@ class ArchiveService:
                 title=title[:250],
                 username=message.chat.username or "",
                 telegram_id=item.message_id,
-                sent_at=item.date.timestamp(),
-                changed_at=(item.edit_date or item.date).timestamp(),
+                sent_at=sent_at,
+                changed_at=edited_at if edited_at is not None else sent_at,
                 outgoing=bool(item.from_user and item.from_user.id == owner_id),
                 sender_id=item.from_user.id if item.from_user else None,
                 media_group=item.media_group_id,

@@ -10,9 +10,10 @@ from unittest.mock import AsyncMock, patch
 from urllib.parse import urlencode
 from zipfile import ZipFile
 
+from aiogram import Bot, Dispatcher
 from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
 from aiogram.methods import SendMessage
-from aiogram.types import Message
+from aiogram.types import Message, Update
 from aiohttp.test_utils import make_mocked_request
 
 from archive.auth import AuthenticationError, hash_pin, validate_init_data, verify_pin
@@ -24,6 +25,7 @@ from archive.schema import LEGACY_MEDIA_TYPES, migrate
 from archive.service import ArchiveService, LimitedWriter, quiet_delay
 from archive.web import create_web_app
 from core.errors import MediaError
+from handlers.archive import archive_edit, archive_message
 from tests.support import DatabaseFixture
 
 
@@ -668,6 +670,43 @@ class WebTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
 
 
 class ServiceTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_business_edit_from_bot_api_reaches_archive_and_notification(self):
+        self.database.save_connection("connection-10", 10, True, True)
+        self.repo.update_owner(10, {"hide_content": False})
+        dispatcher = Dispatcher(app=SimpleNamespace(archive=self.service))
+        dispatcher.business_message.register(archive_message)
+        dispatcher.edited_business_message.register(archive_edit)
+        bot = Bot(self.settings.token)
+        self.addAsyncCleanup(bot.session.close)
+        sent_at = int(time.time()) - 10
+        message = {
+            "message_id": 5,
+            "business_connection_id": "connection-10",
+            "date": sent_at,
+            "chat": {"id": 30, "type": "private", "first_name": "Fixture"},
+            "from": {"id": 30, "first_name": "Fixture", "is_bot": False},
+            "text": "Before edit",
+        }
+        updates = (
+            {"update_id": 1, "business_message": message},
+            {
+                "update_id": 2,
+                "edited_business_message": message | {"edit_date": sent_at + 1, "text": "After edit"},
+            },
+        )
+        for update in updates:
+            await dispatcher.feed_update(bot, Update.model_validate(update, context={"bot": bot}))
+
+        event = self.repo.events(10, kind="edited")["items"][0]
+        self.assertEqual((event["body"], event["occurred_at"]), ("After edit", sent_at + 1))
+        record = self.repo.message(10, event["message_id"])
+        self.assertEqual([version["body"] for version in record["versions"]], ["Before edit", "After edit"])
+        await self.service._process(self.repo.claim())
+        self.bot.send_message.assert_awaited_once()
+        notice = self.bot.send_message.call_args.args[1]
+        self.assertIn("Before edit", notice)
+        self.assertIn("After edit", notice)
+
     async def test_live_photo_captures_and_prefetches_both_components_with_defaults(self):
         self.database.save_connection("connection-10", 10, True, True)
         raw = {
