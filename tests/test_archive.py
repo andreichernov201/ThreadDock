@@ -704,8 +704,11 @@ class ServiceTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
         await self.service._process(self.repo.claim())
         self.bot.send_message.assert_awaited_once()
         notice = self.bot.send_message.call_args.args[1]
-        self.assertIn("Before edit", notice)
-        self.assertIn("After edit", notice)
+        self.assertIn("<b>Было</b>", notice)
+        self.assertIn("<b>Стало</b>", notice)
+        self.assertIn("<b>Before</b> edit", notice)
+        self.assertIn("<b>After</b> edit", notice)
+        self.assertIn("Изменён текст", notice)
 
     async def test_live_photo_captures_and_prefetches_both_components_with_defaults(self):
         self.database.save_connection("connection-10", 10, True, True)
@@ -772,6 +775,51 @@ class ServiceTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
         await self.service._process(task)
         self.assertEqual(self.repo.gallery(10)["items"][0]["status"], "ready")
         self.assertFalse(self.repo.db.execute("SELECT 1 FROM archive_tasks WHERE kind='read'").fetchone())
+
+    async def test_protected_media_delivered_in_reply_is_saved_at_urgent_priority(self):
+        self.database.save_connection("connection-10", 10, True, True)
+        chat = {"id": 30, "type": "private", "first_name": "Fixture"}
+        now = int(time.time())
+        raw = {
+            "message_id": 7,
+            "business_connection_id": "connection-10",
+            "date": now,
+            "chat": chat,
+            "from": {"id": 10, "first_name": "Owner", "is_bot": False},
+            "text": "Reply",
+            "reply_to_message": {
+                "message_id": 6,
+                "date": now - 1,
+                "edit_date": now,
+                "chat": chat,
+                "from": {"id": 30, "first_name": "Fixture", "is_bot": False},
+                "has_protected_content": True,
+                "photo": [{"file_id": "file", "file_unique_id": "unique", "width": 5, "height": 5}],
+            },
+        }
+        await self.service.capture(Message.model_validate(raw), update_id=1)
+        job = self.repo.claim(lane="urgent")
+        self.assertEqual(job["kind"], "media")
+        self.bot.download.side_effect = lambda *_, destination, **__: destination.write(b"test")
+        await self.service._process(job)
+        media = self.repo.gallery(10)["items"][0]
+        self.assertEqual((media["status"], media["protected"], media["ephemeral"]), ("ready", 1, 0))
+
+    async def test_late_disappearing_flag_promotes_queued_attachment(self):
+        at = time.time() - 10
+        self.ingest(at=at, media=[self.photo()], archived=True)
+        self.assertIsNone(self.repo.claim(lane="urgent"))
+        self.ingest(at=at, media=[self.photo()], ephemeral=True, captured_from_reply=True)
+        job = self.repo.claim(lane="urgent")
+        self.assertEqual(job["kind"], "media")
+        self.assertEqual(self.repo.media(10, job["payload"]["media_id"])["ephemeral"], 1)
+
+    async def test_disappearing_update_without_file_reports_unavailability(self):
+        self.ingest(ephemeral=True, body="")
+        event = self.repo.events(10)["items"][0]
+        self.assertEqual(event["kind"], "reply_media")
+        await self.service._process(self.repo.claim())
+        self.assertIn("не передал файл", self.bot.send_message.call_args.args[1])
 
     async def test_prefetched_file_survives_delete_and_appears_in_zip_manifest(self):
         identifier = self.ingest(media=[self.photo("before-delete")])
@@ -989,8 +1037,8 @@ class ArchiveNoticeTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
         self.ingest(body=prefix + "<new>", at=at, changed=at + 1)
         await self.service._process(self.repo.claim())
         notice = self.bot.send_message.call_args.args[1]
-        self.assertIn("old</blockquote>", notice)
-        self.assertIn("&lt;new&gt;</blockquote>", notice)
+        self.assertIn("<b>old</b></blockquote>", notice)
+        self.assertIn("<b>&lt;new&gt;</b></blockquote>", notice)
         self.assertLess(len(notice), 1000)
 
     async def test_notice_uses_the_event_snapshot_not_the_latest_edit(self):

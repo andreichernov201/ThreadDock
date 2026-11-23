@@ -239,6 +239,9 @@ COMMON_ABSENT = "нет"
 HANDLERS_CALLBACKS_ALREADY_REQUESTED = "Задача уже принята или выполнена."
 HANDLERS_CALLBACKS_ACTION_UNAVAILABLE = "Дождись завершения загрузки."
 ARCHIVE_REASON_EDITED = "Текст или вложение изменены. Предыдущая версия сохранена."
+ARCHIVE_REASON_EDIT_TEXT = "Изменён текст. Предыдущая версия сохранена."
+ARCHIVE_REASON_EDIT_FILES = "Изменено вложение. Предыдущая версия сохранена."
+ARCHIVE_REASON_EDIT_TEXT_AND_FILES = "Изменены текст и вложения. Предыдущая версия сохранена."
 ARCHIVE_REASON_EDIT_WITHOUT_ORIGINAL = "Telegram сообщил о правке. Исходная версия недоступна."
 ARCHIVE_REASON_DELETED = "Telegram сообщил об удалении сообщения."
 ARCHIVE_REASON_UNKNOWN = "Telegram сообщил об удалении. Исходное сообщение бот не получил."
@@ -257,13 +260,13 @@ SERVICES_YTDLP_FORMAT_UNAVAILABLE = "Сайт не предоставил под
 ARCHIVE_REASON_REPLY_MEDIA = (
     "Telegram передал признак одноразового просмотра или таймера. Файл поставлен в приоритетную очередь."
 )
+ARCHIVE_REASON_EPHEMERAL_FILE_MISSING = "Telegram сообщил об исчезающем сообщении, но не передал файл для сохранения."
 ARCHIVE_REASON_PROTECTED = "Telegram пометил вложение как защищённое. Статус сохранения доступен в архиве."
 ARCHIVE_SERVICE_EPHEMERAL = "Исчезающее вложение"
 ARCHIVE_SERVICE_PROTECTED_ATTACHMENT = "Защищённое вложение"
 ARCHIVE_SERVICE_PREVIOUS_MISSING = "Исходная версия недоступна"
-ARCHIVE_SERVICE_ATTACHMENT_CHANGED = "Вложения изменились"
 ARCHIVE_SERVICE_EDIT_COMPARISON = (
-    "\n\n<b>Было</b>\n<blockquote>{before}</blockquote>\n<b>Стало</b>\n<blockquote>{after}</blockquote>"
+    "\n\n<b>Было</b>\n<blockquote>{before}</blockquote>\n\n<b>Стало</b>\n<blockquote>{after}</blockquote>"
 )
 ARCHIVE_SERVICE_EXPORT_INVALIDATED = "Данные архива удалены во время подготовки экспорта."
 ARCHIVE_SERVICE_EXPORT_INCOMPLETE = "Telegram прервал отправку архива. Доставлены только первые части."
