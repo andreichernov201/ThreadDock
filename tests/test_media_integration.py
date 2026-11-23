@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 from services.links import normalize_url
 from services.media import MediaTools
 from services.processes import ProcessResult
-from services.ytdlp import build_command
+from services.ytdlp import LIVE_MARKER, build_command
 from tests.support import DatabaseFixture
 
 
@@ -341,6 +341,50 @@ class FFmpegIntegrationTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
 
 @unittest.skipUnless(shutil.which("yt-dlp"), "yt-dlp is not installed")
 class ExtractorOptionsTests(DatabaseFixture, unittest.TestCase):
+    def test_real_cli_marks_and_skips_live_without_a_network_download(self):
+        for status in ("is_live", "is_upcoming", "post_live", "was_live", "not_live"):
+            with self.subTest(status=status):
+                metadata = self.root / "live.json"
+                metadata.write_text(
+                    json.dumps(
+                        {
+                            "id": "fixture",
+                            "title": "Live music",
+                            "extractor": "test",
+                            "extractor_key": "Test",
+                            "live_status": status,
+                            "is_live": status == "is_live",
+                            "is_upcoming": status == "is_upcoming",
+                            "formats": [
+                                {
+                                    "format_id": "ready",
+                                    "url": "https://cdn.example/video.mp4",
+                                    "ext": "mp4",
+                                    "protocol": "https",
+                                    "vcodec": "avc1",
+                                    "acodec": "mp4a",
+                                }
+                            ],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                command = build_command(
+                    self.settings, normalize_url("https://youtu.be/abc"), self.root, "http://127.0.0.1:1"
+                )
+                command = command[: command.index("--")] + [
+                    "--simulate",
+                    "--print",
+                    "after_filter:THREDDOCK_ACCEPTED:%(id)s",
+                    "--dump-single-json",
+                    "--load-info-json",
+                    str(metadata),
+                ]
+                result = subprocess.run(command, capture_output=True, timeout=15)
+                self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+                self.assertIn(LIVE_MARKER.encode(), result.stdout)
+                self.assertEqual(b"THREDDOCK_ACCEPTED" in result.stdout, status in {"was_live", "not_live"})
+
     def test_instagram_prefers_ready_hd_but_does_not_degrade_to_low_resolution(self):
         formats = [
             {
@@ -438,7 +482,7 @@ class ExtractorOptionsTests(DatabaseFixture, unittest.TestCase):
             ]
             result = subprocess.run(command, capture_output=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
-            self.assertEqual(json.loads(result.stdout)["format_id"], expected)
+            self.assertEqual(json.loads(result.stdout.splitlines()[-1])["format_id"], expected)
 
     def test_instagram_prefers_fullhd_without_changing_other_sites(self):
         metadata = self.root / "quality.json"
@@ -484,7 +528,7 @@ class ExtractorOptionsTests(DatabaseFixture, unittest.TestCase):
             ]
             result = subprocess.run(command, capture_output=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
-            selected = json.loads(result.stdout)
+            selected = json.loads(result.stdout.splitlines()[-1])
             self.assertEqual([f["format_id"] for f in selected["requested_formats"]], [expected, "audio"])
 
     def test_real_cli_selects_separate_https_streams_without_network(self):
@@ -537,5 +581,5 @@ class ExtractorOptionsTests(DatabaseFixture, unittest.TestCase):
         ]
         result = subprocess.run(command, capture_output=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
-        selected = json.loads(result.stdout)
+        selected = json.loads(result.stdout.splitlines()[-1])
         self.assertEqual([item["format_id"] for item in selected["requested_formats"]], ["video", "audio"])

@@ -44,6 +44,21 @@ class AdapterTests(DatabaseFixture, unittest.TestCase):
 
 
 class SessionPreservationTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
+    async def test_filtered_live_status_has_a_specific_nonretryable_error(self):
+        for marker in (b'true:false:"is_live"', b'false:true:"is_upcoming"', b'false:false:"post_live"'):
+            with (
+                patch("services.ytdlp.SafeProxy") as proxy,
+                patch(
+                    "services.ytdlp.run_process",
+                    new=AsyncMock(return_value=ProcessResult(0, b"THREDDOCK_LIVE:" + marker, b"")),
+                ),
+            ):
+                proxy.return_value.__aenter__.return_value = SimpleNamespace(url="http://guard")
+                with self.assertRaises(MediaError) as caught:
+                    await YtDlpAdapter(self.settings).download(normalize_url("https://youtu.be/abc"), self.root)
+                self.assertEqual(caught.exception.code, "live_unsupported")
+                self.assertFalse(caught.exception.retryable)
+
     async def test_failed_extractor_cannot_erase_the_installed_session(self):
         original = self.root / "installed-session.txt"
         original.write_bytes(b"fixture-session")

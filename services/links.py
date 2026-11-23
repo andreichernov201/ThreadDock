@@ -1,5 +1,7 @@
 """Извлечение ссылок и проверка поддерживаемых платформ. Без сетевых запросов."""
 
+from __future__ import annotations
+
 import hashlib
 import re
 from collections.abc import Sequence
@@ -27,6 +29,39 @@ class VideoLink:
     platform: str
 
     @property
+    def is_short_tiktok(self) -> bool:
+        parts = urlsplit(self.url)
+        return self.platform == "TikTok" and (
+            parts.hostname in {"vt.tiktok.com", "vm.tiktok.com"} or parts.path.startswith("/t/")
+        )
+
+    @property
+    def comment_id(self) -> str:
+        if self.platform != "TikTok":
+            return ""
+        query = parse_qs(urlsplit(self.url).query)
+        for key in ("share_comment_id", "comment_id"):
+            value = query.get(key, [""])[0]
+            if re.fullmatch(r"[0-9]{1,25}", value):
+                return value
+        return ""
+
+    @property
+    def without_comment(self) -> VideoLink:
+        parts = urlsplit(self.url)
+        query = [(k, v) for k, v in parse_qsl(parts.query) if k not in {"share_comment_id", "comment_id"}]
+        return VideoLink(urlunsplit(parts._replace(query=urlencode(query))), self.platform)
+
+    @property
+    def is_live(self) -> bool:
+        path = urlsplit(self.url).path
+        if self.platform == "TikTok":
+            return bool(re.fullmatch(r"/(?:@[\w.-]+/live|share/live/\d+|live)(?:/.*)?", path))
+        if self.platform == "Instagram":
+            return bool(re.fullmatch(r"/(?:[\w.]+/)?live(?:/.*)?", path))
+        return False
+
+    @property
     def cache_key(self) -> str:
         # Versioned: incompatible rendering changes can safely invalidate old media.
         identity = self.url
@@ -48,7 +83,11 @@ class VideoLink:
             match = re.search(r"/status/(\d+)", parts.path)
             if match:
                 identity = f"x:{match[1]}"
-        version = "media-v5:" if self.platform == "TikTok" else "media-v3:"
+        if self.comment_id:
+            identity += ":comment:" + self.comment_id
+        # Earlier short-link manifests omitted the selected comment. Do not
+        # reuse their captionless Telegram file_id delivery manifests.
+        version = "media-v6:" if self.is_short_tiktok else "media-v5:" if self.platform == "TikTok" else "media-v3:"
         return hashlib.sha256((version + identity).encode()).hexdigest()
 
 

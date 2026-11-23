@@ -192,6 +192,8 @@ class TikTokPhotos:
 
     async def download(self, link: VideoLink, directory: Path) -> MediaBundle | None:
         response = await self.http.get(link.url, 8 * 1024**2)
+        if VideoLink(response.url, "TikTok").is_live:
+            raise MediaError(T.DOWNLOAD_LIVE_UNSUPPORTED, code="live_unsupported")
         match = re.search(r"/(?:photo|video|story|stories)/(\d+)", response.url)
         confirmed_photo = "/photo/" in link.url or "/photo/" in response.url
         try:

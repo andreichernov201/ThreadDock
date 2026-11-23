@@ -36,6 +36,30 @@ class DeliveryTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.database.file_id(123, job.cache_key, "video.mp4", "video"), "remote-1")
         self.assertEqual(self.database.get_job(job.id)["progress"], 1)
 
+    async def test_selected_comment_is_plain_caption_in_every_chat(self):
+        for chat in (10, -123):
+            self.database.set_group(chat, True)
+            job = self.job(chat_id=chat)
+            bundle = replace(self.bundle(), comment="<b>Selected</b> 🔥")
+            await self.delivery.deliver(job, bundle)
+            options = self.bot.send_video.call_args.kwargs
+            self.assertEqual(options["caption"], "💬 <b>Selected</b> 🔥")
+            self.assertIsNone(options["parse_mode"])
+
+    async def test_ordinary_video_has_no_caption(self):
+        await self.delivery.deliver(self.job(), self.bundle())
+        self.assertNotIn("caption", self.bot.send_video.call_args.kwargs)
+
+    async def test_comment_is_only_on_first_album_item_not_the_next_batch(self):
+        job = self.job(mode="photos")
+        bundle = replace(self.bundle(photos=11), comment="Selected")
+        self.bot.send_media_group.return_value = [sent(i + 1, "document") for i in range(10)]
+        await self.delivery.deliver(job, bundle)
+        media = self.bot.send_media_group.call_args.kwargs["media"]
+        self.assertEqual(media[0].caption, "💬 Selected")
+        self.assertTrue(all(item.caption is None for item in media[1:]))
+        self.assertNotIn("caption", self.bot.send_document.call_args.kwargs)
+
     async def test_cached_video_does_not_require_local_file(self):
         job, bundle = self.job(), self.bundle()
         (bundle.directory / "video.mp4").unlink()
@@ -95,10 +119,25 @@ class DeliveryTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
 
         self.database.touch_business_chat("conn", 10, time.time())
         job = self.job(business_id="conn")
-        await self.delivery.deliver(job, self.bundle())
+        await self.delivery.deliver(job, replace(self.bundle(), comment="Selected"))
         options = self.bot.send_video.call_args.kwargs
         self.assertEqual(options["business_connection_id"], "conn")
         self.assertEqual(options["reply_parameters"].message_id, 1)
+        self.assertEqual(options["caption"], "💬 Selected")
+
+    async def test_reused_telegram_file_keeps_its_comment_without_local_file(self):
+        url = "https://www.tiktok.com/@one/video/123?share_comment_id=12"
+        job = self.job(url=url)
+        bundle = replace(self.bundle(), comment="Selected")
+        await self.delivery.deliver(job, bundle)
+        (bundle.directory / "video.mp4").unlink()
+        self.database.complete_job(job.id)
+        other = self.job(url=url, message_id=2)
+        cached = self.delivery.cached(other)
+        self.assertEqual(cached.comment, "Selected")
+        await self.delivery.deliver(other, cached)
+        self.assertEqual(self.bot.send_video.call_args.kwargs["video"], "remote-1")
+        self.assertEqual(self.bot.send_video.call_args.kwargs["caption"], "💬 Selected")
 
     async def test_unavailable_audio_has_clear_error(self):
         with self.assertRaisesRegex(MediaError, "нет"):

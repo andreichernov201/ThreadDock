@@ -79,6 +79,7 @@ class MediaBundle:
     has_audio: bool = True
     media: tuple[Asset, ...] = ()
     motion_pending: bool = False
+    comment: str = ""
 
     @property
     def assets(self) -> tuple[Asset, ...]:
