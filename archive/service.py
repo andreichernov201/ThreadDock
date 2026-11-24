@@ -158,7 +158,7 @@ class ArchiveService:
                 edited_update=item.edit_date is not None if from_reply else edited,
                 update_id=None if from_reply else update_id,
             )
-            if message_id and payload["media"] and (payload["ephemeral"] or (from_reply and payload["protected"])):
+            if message_id and payload["media"] and (payload["ephemeral"] or from_reply):
                 self._urgent_ready.set()
 
     async def deleted(self, event) -> None:

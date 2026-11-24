@@ -842,6 +842,63 @@ class ServiceTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
         await self.service._process(self.repo.claim())
         self.assertEqual(self.bot.send_message.call_args.args[1], "<b>Исчезающее вложение недоступно</b>\nTest chat")
 
+    async def test_disappearing_attachment_in_reply_keeps_priority_and_retries_a_fresh_reference(self):
+        self.database.save_connection("connection-10", 10, True, True)
+        now = int(time.time())
+        chat = {"id": 30, "type": "private", "first_name": "Test chat"}
+        original = {
+            "message_id": 1,
+            "business_connection_id": "connection-10",
+            "date": now - 1,
+            "chat": chat,
+            "from": {"id": 30, "first_name": "Contact", "is_bot": False},
+        }
+        await self.service.capture(Message.model_validate(original | {"is_view_once": True}), update_id=1)
+        event = self.repo.events(10)["items"][0]
+        self.assertEqual(event["kind"], "reply_media")
+        self.assertIsNone(self.repo.claim(lane="urgent"))
+
+        def reply(file_id, message_id):
+            return Message.model_validate(
+                original
+                | {
+                    "message_id": message_id,
+                    "date": now,
+                    "from": {"id": 10, "first_name": "Owner", "is_bot": False},
+                    "text": "Reply",
+                    "reply_to_message": original
+                    | {"photo": [{"file_id": file_id, "file_unique_id": "same-photo", "width": 5, "height": 5}]},
+                }
+            )
+
+        self.ingest(owner=20, captured_from_reply=True, media=[self.photo()])
+        self.assertEqual(self.repo.events(20)["items"], [])
+        await self.service.capture(reply("expired", 2), update_id=2)
+        first = self.repo.claim(lane="urgent")
+        self.assertEqual(first["kind"], "media")
+        self.bot.download.side_effect = TelegramBadRequest(method=SendMessage(chat_id=10, text=""), message="expired")
+        await self.service._process(first)
+        media_id = first["payload"]["media_id"]
+        media = self.repo.media(10, media_id)
+        self.assertEqual((media["ephemeral"], media["protected"], media["status"]), (1, 0, "remote"))
+        self.assertIsNone(self.repo.media(20, media_id))
+
+        await self.service.capture(reply("expired", 3), update_id=3)
+        self.assertIsNone(self.repo.claim(lane="urgent"))
+        await self.service.capture(reply("fresh", 4), update_id=4)
+        second = self.repo.claim(lane="urgent")
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertEqual(second["payload"]["media_id"], media_id)
+
+        self.bot.download.side_effect = lambda *_, destination, **__: destination.write(b"test")
+        await self.service._process(second)
+        self.assertEqual(self.bot.download.await_args.args[0], "fresh")
+        media = self.repo.media(10, media_id)
+        self.assertEqual(media["status"], "ready")
+        self.assertEqual(self.service.safe_path(media["local_path"]).read_bytes(), b"test")
+        self.assertEqual([item["id"] for item in self.repo.events(10)["items"]], [event["id"]])
+        self.assertIsNone(self.repo.claim(lane="urgent"))
+
     async def test_disappearing_media_notice_respects_disabled_media_types(self):
         self.repo.update_owner(10, {"media_types": []})
         self.ingest(ephemeral=True, media=[self.photo()])
