@@ -186,6 +186,30 @@ class PipelineTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         self.pipeline.video.download.assert_awaited_once()
         self.pipeline.gallery.download.assert_not_awaited()
 
+    async def test_youtube_post_uses_its_photo_entries_and_no_video_extractor(self):
+        from core.models import MediaBundle
+
+        async def render(link, directory, entries):
+            (directory / "photo.jpg").write_bytes(b"fixture")
+            return MediaBundle(directory, link.url, link.platform, "Post", None, (Asset("photo.jpg", "photo"),))
+
+        self.pipeline.youtube_posts.entries = AsyncMock(
+            return_value=[("https://yt3.ggpht.com/image=s0-d", {"type": "image", "extension": "jpg"})]
+        )
+        self.pipeline.gallery.render_entries = AsyncMock(side_effect=render)
+        bundle = await self.pipeline.fetch("https://youtube.com/post/UgkxFixture_12345?surface=shorts")
+        self.assertEqual(len(bundle.originals), 1)
+        self.pipeline.video.download.assert_not_awaited()
+        self.pipeline.gallery.download.assert_not_awaited()
+
+    async def test_unavailable_youtube_post_never_returns_a_related_video(self):
+        self.pipeline.youtube_posts.entries = AsyncMock(side_effect=MediaError("No photos", code="no_photos"))
+        with self.assertRaises(MediaError) as caught:
+            await self.pipeline.fetch("https://www.youtube.com/post/UgkxFixture_12345")
+        self.assertEqual(caught.exception.code, "no_photos")
+        self.pipeline.video.download.assert_not_awaited()
+        self.pipeline.gallery.download.assert_not_awaited()
+
     async def test_instagram_embed_success_skips_both_cli_extractors(self):
         from core.models import MediaBundle
 

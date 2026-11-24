@@ -22,6 +22,7 @@ from services.links import normalize_url
 from services.media import MediaTools
 from services.processes import directory_size, remove_directory
 from services.tiktok import PhotoModeError, TikTokPhotos
+from services.youtube_posts import YouTubePosts
 from services.ytdlp import YtDlpAdapter
 from storage.database import Database
 
@@ -71,6 +72,7 @@ class MediaPipeline:
         self.gallery = GalleryAdapter(settings, http, self.tools)
         self.instagram = InstagramEmbed(settings, http)
         self.comments = TikTokComments(http)
+        self.youtube_posts = YouTubePosts(http, settings.max_photos)
         self.locks = KeyedLocks()
         self.leases: dict[Path, int] = {}
         self.work = settings.data_dir / "work"
@@ -142,6 +144,9 @@ class MediaPipeline:
                     bundle = None
                     photo_error = None
                     instagram_gallery = False
+                    if link.youtube_post_id:
+                        entries = await self.youtube_posts.entries(link)
+                        bundle = await gallery.render_entries(link, directory, entries)
                     if instagram_video:
                         try:
                             entries = await self.instagram.entries(link)

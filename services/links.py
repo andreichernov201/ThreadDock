@@ -29,6 +29,13 @@ class VideoLink:
     platform: str
 
     @property
+    def youtube_post_id(self) -> str:
+        if self.platform != "YouTube":
+            return ""
+        match = re.fullmatch(r"/post/([A-Za-z0-9_-]{10,128})/?", urlsplit(self.url).path)
+        return match[1] if match else ""
+
+    @property
     def is_short_tiktok(self) -> bool:
         parts = urlsplit(self.url)
         return self.platform == "TikTok" and (
@@ -69,7 +76,9 @@ class VideoLink:
         if self.platform == "YouTube":
             video_id = parse_qs(parts.query).get("v", [""])[0]
             short = re.fullmatch(r"/(?:shorts|live)/([\w-]+)/?", parts.path, re.ASCII)
-            if video_id or short:
+            if self.youtube_post_id:
+                identity = "youtube:post:" + self.youtube_post_id
+            elif video_id or short:
                 identity = "youtube:" + (video_id or short[1])
         if self.platform == "TikTok":
             match = re.search(r"/(?:video|photo)/(\d+)", parts.path)
@@ -187,5 +196,15 @@ def normalize_url(raw_url: str) -> VideoLink:
         if host in {"youtube.com", "m.youtube.com", "music.youtube.com"}:
             host = "www.youtube.com"
         query = [(key, value) for key, value in query if key not in {"list", "index"}]
+        post = re.fullmatch(r"/post/([A-Za-z0-9_-]{10,128})/?", path)
+        legacy = next((value for key, value in query if key == "lb"), "")
+        if not post and re.fullmatch(r"/(?:@[^/]+|channel/[^/]+|c/[^/]+|user/[^/]+)/(?:community|posts)/?", path):
+            if re.fullmatch(r"[A-Za-z0-9_-]{10,128}", legacy):
+                path = "/post/" + legacy
+                post = re.fullmatch(r"/post/([A-Za-z0-9_-]{10,128})", path)
+        if post:
+            host, path, query = "www.youtube.com", "/post/" + post[1], []
+        elif path.startswith("/post/"):
+            raise LinkError(T.SERVICES_LINKS_INVALID_URL)
     # Пользовательские HTTP-ссылки повышаем до HTTPS. Фрагмент серверу не нужен.
     return VideoLink(urlunsplit(("https", host, path, urlencode(query), "")), platform)
