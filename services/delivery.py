@@ -143,6 +143,8 @@ class TelegramDelivery:
         return [result]
 
     async def deliver(self, job: Job, bundle: MediaBundle) -> None:
+        if not self.database.business_delivery_allowed(job.id):
+            raise MediaError("", code="business_standby")
         if not self.permitted(job.destination) or not await sender_permitted(self.bot, self.database, job.destination):
             raise MediaError(T.SERVICES_DELIVERY_PERMISSION_REVOKED, code="permission_revoked")
         items = bundle.items(job.mode)
