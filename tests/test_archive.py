@@ -815,11 +815,20 @@ class ServiceTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.repo.media(10, job["payload"]["media_id"])["ephemeral"], 1)
 
     async def test_disappearing_update_without_file_reports_unavailability(self):
-        self.ingest(ephemeral=True, body="")
+        self.ingest()
+        self.ingest(ephemeral=True, body="", captured_from_reply=True)
+        self.repo.stage_untriggered_media()
         event = self.repo.events(10)["items"][0]
         self.assertEqual(event["kind"], "reply_media")
         await self.service._process(self.repo.claim())
         self.assertIn("не передал файл", self.bot.send_message.call_args.args[1])
+
+    async def test_disappearing_media_notice_respects_disabled_media_types(self):
+        self.repo.update_owner(10, {"media_types": []})
+        self.ingest(ephemeral=True, media=[self.photo()])
+        self.assertIsNone(self.repo.claim(lane="urgent"))
+        await self.service._process(self.repo.claim())
+        self.assertIn("Статус сохранения доступен в архиве", self.bot.send_message.call_args.args[1])
 
     async def test_prefetched_file_survives_delete_and_appears_in_zip_manifest(self):
         identifier = self.ingest(media=[self.photo("before-delete")])

@@ -258,7 +258,7 @@ ARCHIVE_CONFIG_DOMAIN_REQUIRED = "Для публикации архива ук�
 SERVICES_YTDLP_BLOCKED = "Пост недоступен."
 SERVICES_YTDLP_FORMAT_UNAVAILABLE = "Сайт не предоставил подходящий видеоформат."
 ARCHIVE_REASON_REPLY_MEDIA = (
-    "Telegram передал признак одноразового просмотра или таймера. Файл поставлен в приоритетную очередь."
+    "Telegram передал признак одноразового просмотра или таймера. Статус сохранения доступен в архиве."
 )
 ARCHIVE_REASON_EPHEMERAL_FILE_MISSING = "Telegram сообщил об исчезающем сообщении, но не передал файл для сохранения."
 ARCHIVE_REASON_PROTECTED = "Telegram пометил вложение как защищённое. Статус сохранения доступен в архиве."

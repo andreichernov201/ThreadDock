@@ -637,8 +637,9 @@ class ArchiveRepository:
         if urgent:
             self.db.execute(
                 """UPDATE archive_tasks SET payload=json_set(payload,'$.urgent',1) WHERE owner_id=?
-                AND kind='media' AND status='pending' AND json_extract(payload,'$.media_id') IN (
-                    SELECT id FROM archive_media WHERE owner_id=? AND message_id=? AND status='pending'
+                AND kind='media' AND status='pending' AND coalesce(json_extract(payload,'$.urgent'),0)=0
+                AND dedupe IN (
+                    SELECT 'media:' || id FROM archive_media WHERE owner_id=? AND message_id=? AND status='pending'
                 )""",
                 (owner_id, owner_id, message_id),
             )
