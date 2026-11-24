@@ -62,22 +62,24 @@ class PreferenceTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         self.database.request_media(job.id, "photos", 100)
         self.assertEqual(self.database.claim().render, RenderOptions(5, 10))
 
-    async def test_business_sender_filter_keeps_incoming_reply_window(self):
+    async def test_business_always_accepts_both_sides_and_keeps_incoming_window(self):
         self.database.save_connection("conn", 99, True, True)
-        self.database.set_preference("user", 99, "senders", "self")
-        self.assertIsNone(await self.app.destination(incoming(business="conn")))
+        with self.database.connection:
+            self.database.connection.execute(
+                "INSERT INTO download_preferences(scope,subject,senders) VALUES ('user',99,'self')"
+            )
+        self.assertIsNotNone(await self.app.destination(incoming(business="conn")))
         self.assertTrue(self.database.business_can_send("conn", 10))
         self.assertIsNotNone(await self.app.destination(incoming(sender=99, business="conn")))
-        self.database.set_preference("user", 99, "senders", "peer")
-        self.assertIsNone(await self.app.destination(incoming(sender=99, business="conn")))
-        self.assertIsNotNone(await self.app.destination(incoming(business="conn")))
+        self.assertNotIn("senders", self.database.preferences("user", 99))
+        with self.assertRaises(ValueError):
+            self.database.set_preference("user", 99, "senders", "peer")
 
-    async def test_own_links_are_not_handled_by_both_connections(self):
+    async def test_both_connections_may_prepare_the_request(self):
         self.database.save_connection("recipient", 99, True, True)
         self.database.save_connection("sender", 20, True, True)
-        self.database.set_preference("user", 20, "senders", "self")
         self.database.touch_business_chat("sender", 99, time.time())
-        self.assertIsNone(await self.app.destination(incoming(sender=20, business="recipient")))
+        self.assertIsNotNone(await self.app.destination(incoming(sender=20, business="recipient")))
         self.assertIsNotNone(await self.app.destination(incoming(sender=20, chat_id=99, business="sender")))
         self.database.save_connection("sender", 20, False, True)
         self.assertIsNotNone(await self.app.destination(incoming(sender=20, business="recipient")))

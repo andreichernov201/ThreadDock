@@ -13,6 +13,7 @@ from pathlib import Path
 
 from core.errors import QueueFull
 from core.models import Destination, Job, MediaBundle, RenderOptions
+from storage.business import BUSINESS_READY, BUSINESS_SCHEMA, BusinessDedup
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -60,7 +61,7 @@ CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
 
 
-class Database:
+class Database(BusinessDedup):
     def __init__(self, path: Path, data_root: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.data_root = data_root.resolve()
@@ -71,7 +72,7 @@ class Database:
         version = self.connection.execute("PRAGMA user_version").fetchone()[0]
         if version > 2:
             raise RuntimeError("Database schema is newer than this application")
-        self.connection.executescript(SCHEMA)
+        self.connection.executescript(SCHEMA + BUSINESS_SCHEMA)
         group_columns = {row[1] for row in self.connection.execute("PRAGMA table_info(groups)")}
         if "photo_mode" not in group_columns:
             self.connection.execute("ALTER TABLE groups ADD COLUMN photo_mode TEXT NOT NULL DEFAULT 'slideshow'")
@@ -96,9 +97,13 @@ class Database:
             ("active_since", "REAL NOT NULL DEFAULT 0"),
             ("render_options", "TEXT NOT NULL DEFAULT '{}'"),
             ("phase", "TEXT NOT NULL DEFAULT 'prepare'"),
+            ("business_request_id", "INTEGER NOT NULL DEFAULT 0"),
         ):
             if name not in columns:
                 self.connection.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
+        self.connection.commit()
+        self.connection.execute("CREATE INDEX IF NOT EXISTS jobs_business_request ON jobs(business_request_id,status)")
+        self.connection.execute("UPDATE download_preferences SET senders='all' WHERE scope='user' AND senders!='all'")
         self.connection.commit()
         with self.connection:
             self.connection.execute(
@@ -134,11 +139,16 @@ class Database:
             result = self.connection.execute(
                 "UPDATE jobs SET status='uncertain',error_code='interrupted_delivery' WHERE status='sending'"
             )
+            for row in self.connection.execute(
+                "SELECT id,status FROM jobs WHERE business_request_id>0 AND (status='uncertain' OR progress>0)"
+            ).fetchall():
+                self._business_transition(row["id"], row["status"])
             self.connection.execute("""UPDATE jobs SET status='cancelled',retryable=0,error_code='duplicate_delivered'
                 WHERE status='queued' AND EXISTS (
                   SELECT 1 FROM jobs delivered WHERE delivered.status='done'
                   AND delivered.cache_key=jobs.cache_key AND delivered.chat_id=jobs.chat_id
                   AND delivered.business_id=jobs.business_id AND delivered.mode=jobs.mode
+                  AND (jobs.business_request_id=0 OR jobs.business_request_id=delivered.business_request_id)
                   AND delivered.updated_at>=jobs.created_at)""")
             # Old callback IDs created one job per tap. Retire only those duplicate
             # actions; links sent in distinct Telegram messages remain distinct requests.
@@ -159,18 +169,34 @@ class Database:
         mode: str,
         capacity: int,
         render: RenderOptions = RenderOptions(),
+        *,
+        business_event: str = "",
     ) -> int:
         """Admit the entire message atomically, preserving URL order."""
         now = time.time()
         with self.connection:
             self.connection.execute("BEGIN IMMEDIATE")
+            event_id = self._business_event(destination, business_event)
+            new = [
+                (*item, self._business_request(event_id, slot))
+                for slot, item in enumerate(requests)
+                if not self.connection.execute("SELECT 1 FROM jobs WHERE request_key=?", (item[0],)).fetchone()
+                and (
+                    event_id
+                    or not self.connection.execute(
+                        "SELECT 1 FROM jobs WHERE cache_key=? AND business_id=? AND chat_id=? AND mode=? AND status IN ('queued','running','ready','sending')",
+                        (item[2], destination.business_id, destination.chat_id, mode),
+                    ).fetchone()
+                )
+            ]
             new = [
                 item
-                for item in requests
-                if not self.connection.execute("SELECT 1 FROM jobs WHERE request_key=?", (item[0],)).fetchone()
-                and not self.connection.execute(
-                    "SELECT 1 FROM jobs WHERE cache_key=? AND business_id=? AND chat_id=? AND mode=? AND status IN ('queued','running','ready','sending')",
-                    (item[2], destination.business_id, destination.chat_id, mode),
+                for item in new
+                if not item[3]
+                or not self.connection.execute(
+                    """SELECT 1 FROM business_requests r JOIN jobs w ON w.id=r.winner WHERE r.id=?
+                AND (w.status IN ('done','uncertain') OR w.progress>0)""",
+                    (item[3],),
                 ).fetchone()
             ]
             count = self.connection.execute(
@@ -179,7 +205,7 @@ class Database:
             if count + len(new) > capacity:
                 raise QueueFull()
             self.connection.executemany(
-                "INSERT INTO jobs(request_key,url,cache_key,chat_id,message_id,requester_id,thread_id,business_id,mode,created_at,updated_at,requested_at,render_options) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO jobs(request_key,url,cache_key,chat_id,message_id,requester_id,thread_id,business_id,mode,created_at,updated_at,requested_at,render_options,business_request_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 [
                     (
                         key,
@@ -195,8 +221,9 @@ class Database:
                         now,
                         now,
                         json.dumps(asdict(render)),
+                        business_request_id,
                     )
-                    for key, url, cache_key in new
+                    for key, url, cache_key, business_request_id in new
                 ],
             )
         return len(new)
@@ -290,9 +317,13 @@ class Database:
             row = self.connection.execute(
                 """SELECT j.* FROM jobs j WHERE j.status='ready' AND NOT EXISTS (
                 SELECT 1 FROM jobs p WHERE p.chat_id=j.chat_id AND p.business_id=j.business_id
-                AND p.id<j.id AND p.status IN ('queued','running','ready','sending')) ORDER BY j.id LIMIT 1"""
+                AND p.id<j.id AND p.status IN ('queued','running','ready','sending'))"""
+                + BUSINESS_READY
+                + " ORDER BY j.updated_at,j.id LIMIT 1"
             ).fetchone()
             if row is None:
+                return None
+            if not self._business_claim(row["id"]):
                 return None
             self.connection.execute(
                 "UPDATE jobs SET status='running',phase='deliver',active_since=?,updated_at=? WHERE id=?",
@@ -313,6 +344,9 @@ class Database:
 
     def status(self, job_id: int, status: str, code: str | None = None, delay: float = 0) -> None:
         with self.connection:
+            row = self.get_job(job_id)
+            if row and row["status"] == "cancelled":
+                return
             if status in {"ready", "failed", "uncertain", "done", "cancelled"}:
                 self._pause(job_id, time.time())
             elif status in {"running", "sending"}:
@@ -323,6 +357,7 @@ class Database:
                 "UPDATE jobs SET status=?,error_code=?,available_at=?,updated_at=? WHERE id=?",
                 (status, code, time.time() + delay, time.time(), job_id),
             )
+            self._business_transition(job_id, status)
 
     def delivered_piece(self, job_id: int, piece: int, message_ids: list[int]) -> None:
         with self.connection:
@@ -333,6 +368,7 @@ class Database:
             self.connection.execute(
                 "UPDATE jobs SET progress=?,status='running',updated_at=? WHERE id=?", (piece + 1, time.time(), job_id)
             )
+            self._business_transition(job_id, "running")
 
     def get_job(self, job_id: int):
         return self.connection.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
@@ -361,11 +397,21 @@ class Database:
                 "UPDATE jobs SET status='done',retryable=0,error_code=NULL,updated_at=? WHERE id=?",
                 (time.time(), job_id),
             )
+            self._business_transition(job_id, "done")
             self.connection.execute(
                 """UPDATE jobs SET status='cancelled',retryable=0,error_code='duplicate_delivered',updated_at=?
                 WHERE id!=? AND cache_key=? AND chat_id=? AND business_id=? AND mode=?
+                AND (business_request_id=0 OR business_request_id=?)
                 AND status IN ('queued','failed')""",
-                (time.time(), job_id, row["cache_key"], row["chat_id"], row["business_id"], row["mode"]),
+                (
+                    time.time(),
+                    job_id,
+                    row["cache_key"],
+                    row["chat_id"],
+                    row["business_id"],
+                    row["mode"],
+                    row["business_request_id"],
+                ),
             )
 
     def retry_job(self, job_id: int, attempt: int, capacity: int) -> bool:
@@ -375,6 +421,9 @@ class Database:
             row = self.get_job(job_id)
             if not row or row["status"] != "failed" or not row["retryable"] or row["attempts"] != attempt:
                 return False
+            business = self.business_state(job_id)
+            if business["business_request_id"] and business["winner"] not in (0, job_id):
+                return False
             count = self.connection.execute(
                 "SELECT count(*) FROM jobs WHERE status IN ('queued','running','ready','sending')"
             ).fetchone()[0]
@@ -383,6 +432,9 @@ class Database:
             self.connection.execute(
                 "UPDATE jobs SET status='queued',retryable=0,error_code=NULL,available_at=0,active_elapsed=0,active_since=0,updated_at=?,requested_at=? WHERE id=?",
                 (time.time(), time.time(), job_id),
+            )
+            self.connection.execute(
+                "UPDATE business_requests SET notified=0 WHERE id=?", (business["business_request_id"],)
             )
         return True
 
@@ -496,6 +548,8 @@ class Database:
             values.update({key: row[key] for key in values})
         if scope == "group":
             values["mode"] = self.group_photo_mode(subject)
+        else:
+            values.pop("senders")
         return values
 
     def set_preference(self, scope: str, subject: int, name: str, value) -> None:
@@ -503,7 +557,7 @@ class Database:
             "mode": {"photos", "slideshow"},
             "photo_seconds": {2, 3, 5, 10},
             "live_limit": {0, 5, 10},
-            "senders": {"all", "self", "peer"} if scope == "user" else {"all", "admins", "selected"},
+            "senders": {"all", "admins", "selected"} if scope == "group" else set(),
         }
         if scope not in {"user", "group"} or name not in allowed or value not in allowed[name]:
             raise ValueError("Invalid preference")
@@ -545,17 +599,6 @@ class Database:
             self.connection.execute(
                 "UPDATE download_preferences SET senders='selected' WHERE scope='group' AND subject=?", (group_id,)
             )
-
-    def handles_own_links(self, user_id: int, peer_id: int) -> bool:
-        return (
-            self.preferences("user", user_id)["senders"] == "self"
-            and self.connection.execute(
-                """SELECT 1 FROM connections c JOIN business_chats b ON b.connection_id=c.id
-                WHERE c.owner_id=? AND c.enabled=1 AND c.can_reply=1 AND b.chat_id=? AND b.incoming_at>?""",
-                (user_id, peer_id, time.time() - 86400),
-            ).fetchone()
-            is not None
-        )
 
     def group_enabled(self, chat_id: int, defaults: frozenset[int]) -> bool:
         row = self.connection.execute("SELECT enabled FROM groups WHERE chat_id=?", (chat_id,)).fetchone()
@@ -630,3 +673,4 @@ class Database:
                 """DELETE FROM telegram_files WHERE cache_key NOT IN
                 (SELECT key FROM cache UNION SELECT key FROM telegram_cache)"""
             )
+            self._business_prune()

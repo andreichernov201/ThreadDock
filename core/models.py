@@ -31,6 +31,7 @@ class Destination:
     requester_id: int
     thread_id: int | None = None
     business_id: str = ""
+    sent_at: int = 0
 
 
 @dataclass(frozen=True)
