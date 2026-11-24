@@ -23,7 +23,7 @@ from aiogram.exceptions import (
 from aiogram.types import FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
 
 from archive.config import PREFETCH_TTL, ArchiveSettings
-from archive.content import message_payload, visible_content
+from archive.content import message_payload
 from archive.exports import bundle_export, write_export
 from archive.repository import RETAINED_MESSAGE, ArchiveRepository
 from core import texts as T
@@ -68,6 +68,7 @@ class ArchiveService:
         for path in (self.blobs, self.exports, self.uploads, self.prefetch_cache):
             path.mkdir(parents=True, exist_ok=True)
         self.stopping = asyncio.Event()
+        self._urgent_ready = asyncio.Event()
         self.task: asyncio.Task | None = None
         self._locks: dict[int, asyncio.Lock] = {}
         self._last_maintenance = 0.0
@@ -138,7 +139,9 @@ class ArchiveService:
             edited_at = item.edit_date
             if isinstance(edited_at, datetime):
                 edited_at = edited_at.timestamp()
-            self.repository.ingest(
+            from_reply = item is message.reply_to_message
+            payload = message_payload(item)
+            message_id = self.repository.ingest(
                 owner_id=owner_id,
                 connection_id=message.business_connection_id,
                 source_chat_id=message.chat.id,
@@ -150,11 +153,13 @@ class ArchiveService:
                 outgoing=bool(item.from_user and item.from_user.id == owner_id),
                 sender_id=item.from_user.id if item.from_user else None,
                 media_group=item.media_group_id,
-                payload=message_payload(item),
-                captured_from_reply=item is message.reply_to_message,
-                edited_update=edited if item is message else item.edit_date is not None,
-                update_id=update_id if item is message else None,
+                payload=payload,
+                captured_from_reply=from_reply,
+                edited_update=item.edit_date is not None if from_reply else edited,
+                update_id=None if from_reply else update_id,
             )
+            if message_id and payload["media"] and (payload["ephemeral"] or (from_reply and payload["protected"])):
+                self._urgent_ready.set()
 
     async def deleted(self, event) -> None:
         if (
@@ -213,6 +218,7 @@ class ArchiveService:
 
     async def close(self) -> None:
         self.stopping.set()
+        self._urgent_ready.set()
         if self.task:
             try:
                 await asyncio.wait_for(asyncio.shield(self.task), self.settings.shutdown_timeout)
@@ -220,15 +226,16 @@ class ArchiveService:
                 self.task.cancel()
                 await asyncio.gather(self.task, return_exceptions=True)
 
-    async def _idle(self, seconds: float):
+    async def _idle(self, seconds: float, *, wake: asyncio.Event | None = None):
         try:
-            await asyncio.wait_for(self.stopping.wait(), seconds)
+            await asyncio.wait_for((wake or self.stopping).wait(), seconds)
         except TimeoutError:
             pass
 
     async def _run_workers(self):
         async with asyncio.TaskGroup() as group:
-            group.create_task(self._worker("urgent"), name="archive-urgent-media")
+            for index in range(2):
+                group.create_task(self._worker("urgent"), name=f"archive-urgent-media-{index + 1}")
             group.create_task(self._vault_cleanup(), name="archive-vault-cleanup")
             for index in range(2):
                 group.create_task(self._worker("standard"), name=f"archive-worker-{index + 1}")
@@ -241,7 +248,11 @@ class ArchiveService:
             busy = {owner for owner, lock in self._locks.items() if lock.locked()} if lane == "standard" else set()
             task = self.repository.claim(lane=lane, busy_owners=busy)
             if task is None:
-                await self._idle(0.1 if lane == "urgent" else 0.25)
+                if lane == "urgent":
+                    self._urgent_ready.clear()
+                    await self._idle(0.1, wake=self._urgent_ready)
+                else:
+                    await self._idle(0.25)
                 continue
             if lane == "urgent":
                 await self._process(task)
@@ -396,15 +407,19 @@ class ArchiveService:
             ).fetchone()
             for event in event_ids
         ]
-        rows = [row for row in rows if row and not row["muted"]]
-        field = {
-            "edited": "notify_edits",
-            "deleted": "notify_deletes",
-            "unknown_deleted": "notify_deletes",
-            "keyword": "notify_keywords",
-            "profile": "notify_profiles",
+        notices = {
+            "edited": ("notify_edits", T.ARCHIVE_SERVICE_MESSAGE_EDITED),
+            "deleted": ("notify_deletes", T.ARCHIVE_SERVICE_MESSAGE_DELETED),
+            "unknown_deleted": ("notify_deletes", T.ARCHIVE_SERVICE_UNKNOWN_DELETION),
+            "keyword": ("notify_keywords", T.ARCHIVE_SERVICE_KEYWORD_MATCH),
+            "reply_media": ("notify_enabled", T.ARCHIVE_SERVICE_EPHEMERAL),
+            "protected_media": ("notify_enabled", T.ARCHIVE_SERVICE_PROTECTED_ATTACHMENT),
         }
-        rows = [row for row in rows if owner.get(field.get(row["kind"], "notify_enabled"))]
+        rows = [
+            row
+            for row in rows
+            if row and not row["muted"] and row["kind"] in notices and owner[notices[row["kind"]][0]]
+        ]
         if not rows:
             return
         # Coalesce pending deletion notices from this chat into the current request.
@@ -429,57 +444,34 @@ class ArchiveService:
                 ):
                     rows.extend(candidates)
                     batch_ids.append(pending["id"])
-        labels = {
-            "edited": T.ARCHIVE_SERVICE_MESSAGE_EDITED,
-            "deleted": T.ARCHIVE_SERVICE_MESSAGE_DELETED,
-            "unknown_deleted": T.ARCHIVE_SERVICE_UNKNOWN_DELETION,
-            "keyword": T.ARCHIVE_SERVICE_KEYWORD_MATCH,
-            "profile": T.ARCHIVE_SERVICE_PROFILE_CHANGED,
-            "reply_media": T.ARCHIVE_SERVICE_EPHEMERAL,
-            "protected_media": T.ARCHIVE_SERVICE_PROTECTED_ATTACHMENT,
-        }
-        title = (
-            labels.get(rows[0]["kind"], T.ARCHIVE_SERVICE_ARCHIVE_EVENT)
-            if len(rows) == 1
-            else T.ARCHIVE_SERVICE_DELETED_COUNT.format(value1=len(rows))
-        )
+        kind = rows[0]["kind"]
+        title = notices[kind][1]
+        if len(rows) > 1:
+            title = T.ARCHIVE_SERVICE_DELETED_COUNT.format(value1=len(rows))
+        elif (
+            kind == "reply_media"
+            and not self.repository.db.execute(
+                "SELECT 1 FROM archive_media WHERE owner_id=? AND message_id=? AND ephemeral=1",
+                (owner["owner_id"], rows[0]["message_id"]),
+            ).fetchone()
+        ):
+            title = T.ARCHIVE_SERVICE_EPHEMERAL_UNAVAILABLE
         text = T.ARCHIVE_SERVICE_NOTIFICATION_HEADER.format(
             title=html.escape(title), chat=html.escape(rows[0]["title"])
         )
-        reason = {
-            "deleted": T.ARCHIVE_REASON_DELETED,
-            "unknown_deleted": T.ARCHIVE_REASON_UNKNOWN,
-            "keyword": T.ARCHIVE_REASON_KEYWORD,
-            "profile": T.ARCHIVE_REASON_PROFILE,
-            "reply_media": T.ARCHIVE_REASON_REPLY_MEDIA,
-            "protected_media": T.ARCHIVE_REASON_PROTECTED,
-        }.get(rows[0]["kind"], "")
-        if len(rows) > 1:
-            reason = T.ARCHIVE_REASON_DELETED_BATCH.format(count=len(rows))
-        if rows[0]["kind"] == "edited":
-            text += self._edit_notice(rows[0], owner)
-        else:
-            if (
-                rows[0]["kind"] == "reply_media"
-                and not self.repository.db.execute(
-                    "SELECT 1 FROM archive_media WHERE owner_id=? AND message_id=? AND ephemeral=1",
-                    (owner["owner_id"], rows[0]["message_id"]),
-                ).fetchone()
-            ):
-                reason = T.ARCHIVE_REASON_EPHEMERAL_FILE_MISSING
-            if reason:
-                text += "\n" + html.escape(reason)
-        if not owner["hide_content"] and rows[0]["kind"] != "edited":
-            previews = [
-                html.escape((row["body"] or "").strip()[:500] or T.ARCHIVE_SERVICE_EMPTY_PREVIEW) for row in rows[:4]
-            ]
-            text += "\n\n" + "\n\n".join(previews)
-        if len(rows) == 1 and rows[0]["kind"] == "keyword":
+        if not owner["hide_content"]:
+            if kind == "edited":
+                text += self._edit_notice(rows[0], owner["owner_id"])
+            else:
+                previews = [html.escape(row["body"].strip()[:500]) for row in rows[:4] if (row["body"] or "").strip()]
+                if previews:
+                    text += "\n\n" + "\n\n".join(previews)
+        if kind == "keyword":
             text += "\n" + html.escape(
                 T.ARCHIVE_REASON_MATCHES.format(words=", ".join(json.loads(rows[0]["payload"])["matches"]))
             )
         buttons = []
-        if self.config.public_url and rows[0]["kind"] != "keyword":
+        if self.config.public_url and kind != "keyword":
             buttons.append(
                 [
                     InlineKeyboardButton(
@@ -515,28 +507,12 @@ class ArchiveService:
         for job_id in batch_ids[1:]:
             self.repository.task_status(job_id, "done")
 
-    def _edit_notice(self, row, owner: dict) -> str:
-        previous = self.repository.previous_version(owner["owner_id"], row["message_id"], row["version_id"])
+    def _edit_notice(self, row, owner_id: int) -> str:
+        previous = self.repository.previous_version(owner_id, row["message_id"], row["version_id"])
         current_payload = json.loads(row["version_payload"] or "{}")
         previous_payload = json.loads(previous["payload"]) if previous else {}
         before = previous["body"] if previous else ""
         after = row["body"] or ""
-        reason = T.ARCHIVE_REASON_EDIT_WITHOUT_ORIGINAL
-        if previous:
-            reason = T.ARCHIVE_REASON_EDITED
-            if row["version_payload"]:
-                text_changed = before != after
-                files_changed = visible_content(previous_payload)[1] != visible_content(current_payload)[1]
-                if text_changed and files_changed:
-                    reason = T.ARCHIVE_REASON_EDIT_TEXT_AND_FILES
-                elif text_changed:
-                    reason = T.ARCHIVE_REASON_EDIT_TEXT
-                elif files_changed:
-                    reason = T.ARCHIVE_REASON_EDIT_FILES
-
-        text = "\n" + html.escape(reason)
-        if owner["hide_content"]:
-            return text
         prefix = tail = 0
         if previous and before != after:
             prefix = len(os.path.commonprefix((before, after)))
@@ -544,7 +520,7 @@ class ArchiveService:
         start = max(0, prefix - 80)
         before_span = (prefix, len(before) - tail) if previous and before != after else (0, 0)
         after_span = (prefix, len(after) - tail) if previous and before != after else (0, 0)
-        return text + T.ARCHIVE_SERVICE_EDIT_COMPARISON.format(
+        return T.ARCHIVE_SERVICE_EDIT_COMPARISON.format(
             before=self._edit_preview(before, previous_payload, start, before_span)
             if previous
             else html.escape(T.ARCHIVE_SERVICE_PREVIOUS_MISSING),

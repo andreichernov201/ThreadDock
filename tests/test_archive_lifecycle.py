@@ -377,7 +377,7 @@ class ArchiveEventReliabilityTests(ArchiveFixture, unittest.IsolatedAsyncioTestC
         )
         self.assertEqual(self.repo.search(10, "Budget", mode="deleted")["items"], [])
 
-    async def test_notices_explain_both_verified_and_first_seen_edits_without_showing_text(self):
+    async def test_hidden_edit_notices_use_only_the_event_and_chat(self):
         at = int(time.time()) - 100
         self.ingest(at=at, body="Private original")
         self.ingest(at=at, changed=at + 30, body="Private replacement")
@@ -385,9 +385,23 @@ class ArchiveEventReliabilityTests(ArchiveFixture, unittest.IsolatedAsyncioTestC
         for _ in range(2):
             await self.service._process(self.repo.claim())
         known, unknown = (call.args[1] for call in self.bot.send_message.await_args_list)
-        self.assertIn("Предыдущая версия сохранена", known)
-        self.assertIn("Исходная версия недоступна", unknown)
-        self.assertNotIn("Private", known + unknown)
+        self.assertEqual(known, "<b>✏️ Сообщение изменено</b>\nTest chat")
+        self.assertEqual(unknown, known)
+
+    async def test_profile_event_stays_in_archive_without_a_chat_notice(self):
+        self.repo.update_owner(10, {"notify_profiles": True})
+        self.ingest()
+        self.ingest(telegram_id=2, title="New name")
+        event = next(row for row in self.repo.events(10)["items"] if row["kind"] == "profile")
+        tasks = [
+            json.loads(row["payload"])
+            for row in self.repo.db.execute("SELECT payload FROM archive_tasks WHERE kind='notify'")
+        ]
+        self.assertFalse(any(event["id"] in task["event_ids"] for task in tasks))
+        legacy_job = self.repo.enqueue(10, "notify", {"event_ids": [event["id"]]})
+        await self.service._process(self.repo.claim())
+        self.assertEqual(self.repo.task(10, legacy_job)["status"], "done")
+        self.bot.send_message.assert_not_awaited()
 
     async def test_stalled_fetch_is_bounded_and_uncertain_send_is_not_reclaimed(self):
         original_timeout = asyncio.timeout

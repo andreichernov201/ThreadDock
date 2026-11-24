@@ -60,7 +60,7 @@ class ArchiveFixture(DatabaseFixture):
             owner_id=owner,
             connection_id=f"connection-{owner}",
             source_chat_id=30,
-            title="Test chat",
+            title=kwargs.pop("title", "Test chat"),
             username="test",
             telegram_id=telegram_id,
             sent_at=at,
@@ -708,7 +708,7 @@ class ServiceTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
         self.assertIn("<b>Стало</b>", notice)
         self.assertIn("<b>Before</b> edit", notice)
         self.assertIn("<b>After</b> edit", notice)
-        self.assertIn("Изменён текст", notice)
+        self.assertNotIn("Предыдущая версия сохранена", notice)
 
     async def test_live_photo_captures_and_prefetches_both_components_with_defaults(self):
         self.database.save_connection("connection-10", 10, True, True)
@@ -754,7 +754,7 @@ class ServiceTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(call["chat_id"], 10)
         self.assertEqual(Path(call["photo"].path).read_bytes(), b"jpeg")
 
-    async def test_direct_view_once_media_is_claimable_without_reply_or_marking_read(self):
+    async def test_direct_view_once_media_is_saved_while_another_urgent_download_is_running(self):
         self.database.save_connection("connection-10", 10, True, True)
         raw = {
             "message_id": 5,
@@ -766,15 +766,34 @@ class ServiceTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
         }
         message = Message.model_validate(raw)
         self.assertTrue(message_payload(message)["ephemeral"])
-        await self.service.capture(message, update_id=1)
-        event = self.repo.events(10)["items"][0]
-        self.assertEqual(event["kind"], "reply_media")
-        self.assertFalse(event["payload"]["from_reply"])
-        task = self.repo.claim(lane="urgent")
-        self.bot.download.side_effect = lambda *_, destination, **__: destination.write(b"test")
-        await self.service._process(task)
-        self.assertEqual(self.repo.gallery(10)["items"][0]["status"], "ready")
-        self.assertFalse(self.repo.db.execute("SELECT 1 FROM archive_tasks WHERE kind='read'").fetchone())
+        self.ingest(telegram_id=4, media=[self.photo("slow")], ephemeral=True)
+        started, release, saved = (asyncio.Event() for _ in range(3))
+
+        async def download(file_id, *, destination, **kwargs):
+            if file_id == "slow":
+                started.set()
+                await release.wait()
+            destination.write(b"test")
+            if file_id == "file":
+                saved.set()
+
+        self.bot.download.side_effect = download
+        self.service.start()
+        try:
+            await asyncio.wait_for(started.wait(), 3)
+            await self.service.capture(message, update_id=1)
+            event = self.repo.events(10)["items"][0]
+            self.assertEqual(event["kind"], "reply_media")
+            self.assertFalse(event["payload"]["from_reply"])
+            await asyncio.wait_for(saved.wait(), 3)
+            media = self.repo.message(10, event["message_id"])["media"][0]
+            row = self.repo.media(10, media["id"])
+            self.assertEqual(row["status"], "ready")
+            self.assertEqual(self.service.safe_path(row["local_path"]).read_bytes(), b"test")
+            self.assertFalse(self.repo.db.execute("SELECT 1 FROM archive_tasks WHERE kind='read'").fetchone())
+        finally:
+            release.set()
+            await self.service.close()
 
     async def test_protected_media_delivered_in_reply_is_saved_at_urgent_priority(self):
         self.database.save_connection("connection-10", 10, True, True)
@@ -821,14 +840,14 @@ class ServiceTests(ArchiveFixture, unittest.IsolatedAsyncioTestCase):
         event = self.repo.events(10)["items"][0]
         self.assertEqual(event["kind"], "reply_media")
         await self.service._process(self.repo.claim())
-        self.assertIn("не передал файл", self.bot.send_message.call_args.args[1])
+        self.assertEqual(self.bot.send_message.call_args.args[1], "<b>Исчезающее вложение недоступно</b>\nTest chat")
 
     async def test_disappearing_media_notice_respects_disabled_media_types(self):
         self.repo.update_owner(10, {"media_types": []})
         self.ingest(ephemeral=True, media=[self.photo()])
         self.assertIsNone(self.repo.claim(lane="urgent"))
         await self.service._process(self.repo.claim())
-        self.assertIn("Статус сохранения доступен в архиве", self.bot.send_message.call_args.args[1])
+        self.assertEqual(self.bot.send_message.call_args.args[1], "<b>Исчезающее вложение</b>\nTest chat")
 
     async def test_prefetched_file_survives_delete_and_appears_in_zip_manifest(self):
         identifier = self.ingest(media=[self.photo("before-delete")])

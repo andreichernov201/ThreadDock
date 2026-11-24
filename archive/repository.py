@@ -272,7 +272,7 @@ class ArchiveRepository:
         )
         if cursor.rowcount:
             identifier = cursor.lastrowid
-            if kind != "new":
+            if kind not in {"new", "profile"}:
                 self._enqueue(owner, "notify", {"event_ids": [identifier]}, f"notify:{identifier}")
             return identifier
         return None
