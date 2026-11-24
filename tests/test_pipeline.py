@@ -19,12 +19,99 @@ class PipelineTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
         self.pipeline.tools.compatible_video = AsyncMock(side_effect=self.convert)
         self.pipeline.tools.extract_audio = AsyncMock(return_value=None)
         self.pipeline.instagram.entries = AsyncMock(side_effect=MediaError("missing", code="instagram_embed_missing"))
+        self.pipeline.comments.resolve = AsyncMock(side_effect=lambda link: link)
+        self.pipeline.photos.download = AsyncMock(return_value=None)
 
     async def download(self, link, directory):
         path = directory / "source.mp4"
         path.write_bytes(b"source")
         (directory / "source.info.json").write_text('{"secret":"signed-url"}')
         return path, "Example"
+
+    async def test_live_rejection_does_not_run_any_downloader(self):
+        for url in ["https://www.tiktok.com/@one/live", "https://www.instagram.com/one/live/123"]:
+            with self.assertRaises(MediaError) as caught:
+                await self.pipeline.fetch(url)
+            self.assertEqual(caught.exception.code, "live_unsupported")
+        self.pipeline.video.download.assert_not_awaited()
+        self.pipeline.gallery.download.assert_not_awaited()
+
+    async def test_metadata_live_rejection_does_not_try_gallery(self):
+        self.pipeline.video.download.side_effect = MediaError("Live", code="live_unsupported")
+        with self.assertRaises(MediaError):
+            await self.pipeline.fetch("https://www.tiktok.com/@one/video/123")
+        self.pipeline.gallery.download.assert_not_awaited()
+
+    async def test_comments_never_share_captions_with_other_requests(self):
+        base = "https://www.tiktok.com/@one/video/123"
+        self.pipeline.comments.text = AsyncMock(side_effect=lambda link: "Comment " + link.comment_id)
+        first = await self.pipeline.fetch(base + "?share_comment_id=12")
+        second = await self.pipeline.fetch(base + "?share_comment_id=13")
+        ordinary = await self.pipeline.fetch(base)
+        self.assertEqual(first.comment, "Comment 12")
+        self.assertEqual(second.comment, "Comment 13")
+        self.assertEqual(ordinary.comment, "")
+        self.assertNotEqual(first.directory, second.directory)
+        self.assertEqual(self.pipeline.video.download.await_count, 3)
+        self.assertEqual((await self.pipeline.fetch(base + "?comment_id=12")).comment, "Comment 12")
+        self.assertEqual(self.pipeline.video.download.await_count, 3)
+
+    async def test_comment_lookup_starts_during_video_preparation(self):
+        started = asyncio.Event()
+
+        async def comment(link):
+            started.set()
+            return "Selected"
+
+        async def video(link, directory):
+            await asyncio.wait_for(started.wait(), 1)
+            return await self.download(link, directory)
+
+        self.pipeline.comments.text = AsyncMock(side_effect=comment)
+        self.pipeline.video.download.side_effect = video
+        bundle = await self.pipeline.fetch("https://www.tiktok.com/@one/video/123?comment_id=12")
+        self.assertEqual(bundle.comment, "Selected")
+
+    async def test_missing_comment_still_returns_the_video(self):
+        self.pipeline.comments.text = AsyncMock(return_value="")
+        bundle = await self.pipeline.fetch("https://www.tiktok.com/@one/video/123?comment_id=12")
+        self.assertIsNotNone(bundle.video)
+        self.assertEqual(bundle.comment, "")
+
+    async def test_short_comment_cache_keeps_the_active_job_key_after_redirect(self):
+        short = "https://vt.tiktok.com/abc/"
+        resolved = normalize_url("https://www.tiktok.com/@one/video/123?share_comment_id=12")
+        self.pipeline.comments.resolve.return_value = resolved
+        self.pipeline.comments.resolve.side_effect = None
+        self.pipeline.comments.text = AsyncMock(return_value="Selected")
+        job = self.job(url=short)
+        bundle = await self.pipeline.fetch(short)
+        self.assertEqual(self.database.get_cache(job.cache_key).comment, "Selected")
+        self.pipeline.photos.download.assert_awaited_once()
+        self.database.connection.execute("UPDATE cache SET expires_at=0")
+        self.database.connection.commit()
+        self.pipeline.maintain()
+        self.assertTrue(bundle.directory.is_dir())
+
+    async def test_failed_video_cancels_optional_comment_work(self):
+        ended = asyncio.Event()
+
+        async def lookup(link):
+            try:
+                await asyncio.Future()
+            finally:
+                ended.set()
+
+        async def failure(link, directory):
+            await asyncio.sleep(0)
+            raise MediaError("Too large", code="file_too_large")
+
+        self.pipeline.comments.text = AsyncMock(side_effect=lookup)
+        self.pipeline.video.download.side_effect = failure
+        with self.assertRaises(MediaError):
+            await self.pipeline.fetch("https://www.tiktok.com/@one/video/123?comment_id=12")
+        self.assertTrue(ended.is_set())
+        self.assertEqual(list(self.pipeline.work.iterdir()), [])
 
     async def convert(self, source, directory):
         (directory / "video.mp4").write_bytes(b"processed")
@@ -97,6 +184,30 @@ class PipelineTests(DatabaseFixture, unittest.IsolatedAsyncioTestCase):
     async def test_instagram_reel_uses_video_without_waiting_for_gallery(self):
         await self.pipeline.fetch("https://www.instagram.com/reel/example/")
         self.pipeline.video.download.assert_awaited_once()
+        self.pipeline.gallery.download.assert_not_awaited()
+
+    async def test_youtube_post_uses_its_photo_entries_and_no_video_extractor(self):
+        from core.models import MediaBundle
+
+        async def render(link, directory, entries):
+            (directory / "photo.jpg").write_bytes(b"fixture")
+            return MediaBundle(directory, link.url, link.platform, "Post", None, (Asset("photo.jpg", "photo"),))
+
+        self.pipeline.youtube_posts.entries = AsyncMock(
+            return_value=[("https://yt3.ggpht.com/image=s0-d", {"type": "image", "extension": "jpg"})]
+        )
+        self.pipeline.gallery.render_entries = AsyncMock(side_effect=render)
+        bundle = await self.pipeline.fetch("https://youtube.com/post/UgkxFixture_12345?surface=shorts")
+        self.assertEqual(len(bundle.originals), 1)
+        self.pipeline.video.download.assert_not_awaited()
+        self.pipeline.gallery.download.assert_not_awaited()
+
+    async def test_unavailable_youtube_post_never_returns_a_related_video(self):
+        self.pipeline.youtube_posts.entries = AsyncMock(side_effect=MediaError("No photos", code="no_photos"))
+        with self.assertRaises(MediaError) as caught:
+            await self.pipeline.fetch("https://www.youtube.com/post/UgkxFixture_12345")
+        self.assertEqual(caught.exception.code, "no_photos")
+        self.pipeline.video.download.assert_not_awaited()
         self.pipeline.gallery.download.assert_not_awaited()
 
     async def test_instagram_embed_success_skips_both_cli_extractors(self):

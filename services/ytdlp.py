@@ -17,6 +17,7 @@ FORMAT = f"bv{SAFE_PROTOCOL}+ba{SAFE_PROTOCOL}/b{SAFE_PROTOCOL}/bv{SAFE_PROTOCOL
 INSTAGRAM_FORMAT = (
     f"b{SAFE_PROTOCOL}[ext=mp4][width>=720][height>=720][vcodec~=?'^(avc1|h264)'][acodec~=?'^(mp4a|aac)']/" + FORMAT
 )
+LIVE_MARKER = "THREDDOCK_LIVE:"
 
 
 def build_command(settings: Settings, link: VideoLink, directory: Path, proxy: str) -> list[str]:
@@ -51,7 +52,10 @@ def build_command(settings: Settings, link: VideoLink, directory: Path, proxy: s
         "--max-filesize",
         str(settings.max_download_bytes),
         "--match-filter",
-        "!is_live & !is_upcoming",
+        "!is_live & !is_upcoming & live_status!=?post_live",
+        "--print",
+        f"pre_process:{LIVE_MARKER}%(is_live)j:%(is_upcoming)j:%(live_status)j",
+        "--no-simulate",
         "--format",
         INSTAGRAM_FORMAT if link.platform == "Instagram" else FORMAT,
         "--downloader",
@@ -90,6 +94,19 @@ def source_error(stderr: bytes) -> MediaError:
     text = stderr.decode("utf-8", errors="replace").lower()
     # Signed URL parameters may themselves contain words such as "private" or "404".
     text = re.sub(r"https?://\S+", "[url]", text)
+    if any(
+        phrase in text
+        for phrase in (
+            "is currently live",
+            "not currently live",
+            "livestream has ended",
+            "live event will begin",
+            "premiere will begin",
+            "live event has ended",
+            "live stream recording is not available",
+        )
+    ):
+        return MediaError(T.DOWNLOAD_LIVE_UNSUPPORTED, code="live_unsupported")
     if any(
         word in text
         for word in ("timed out", "429", "502", "503", "temporary", "resolve", "connection", "reset by peer")
@@ -132,6 +149,17 @@ class YtDlpAdapter:
                 watch_directory=directory,
                 max_disk_bytes=self.settings.max_download_bytes * 3,
             )
+        # Read only our structured status marker, never a title or an upstream
+        # diagnostic that might happen to contain the word "live".
+        for line in result.stdout.decode("utf-8", errors="replace").splitlines():
+            if line.startswith(LIVE_MARKER):
+                values = line[len(LIVE_MARKER) :].split(":")
+                if len(values) == 3 and (
+                    values[0] == "true"
+                    or values[1] == "true"
+                    or values[2] in {'"is_live"', '"is_upcoming"', '"post_live"'}
+                ):
+                    raise MediaError(T.DOWNLOAD_LIVE_UNSUPPORTED, code="live_unsupported")
         if result.returncode:
             raise source_error(result.stderr)
         files = [

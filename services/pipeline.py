@@ -14,6 +14,7 @@ from config import Settings
 from core import texts as T
 from core.errors import MediaError
 from core.models import MediaBundle, RenderOptions
+from services.comments import TikTokComments
 from services.gallery import GalleryAdapter
 from services.http import PublicHttp
 from services.instagram import InstagramEmbed, InstagramGalleryError, video_post_id
@@ -21,6 +22,7 @@ from services.links import normalize_url
 from services.media import MediaTools
 from services.processes import directory_size, remove_directory
 from services.tiktok import PhotoModeError, TikTokPhotos
+from services.youtube_posts import YouTubePosts
 from services.ytdlp import YtDlpAdapter
 from storage.database import Database
 
@@ -37,6 +39,7 @@ def preserve_limits(error: MediaError) -> None:
         "processing_timeout",
         "conversion_failed",
         "invalid_output",
+        "live_unsupported",
     }:
         raise error
 
@@ -68,6 +71,8 @@ class MediaPipeline:
         self.photos = TikTokPhotos(settings, http, self.tools)
         self.gallery = GalleryAdapter(settings, http, self.tools)
         self.instagram = InstagramEmbed(settings, http)
+        self.comments = TikTokComments(http)
+        self.youtube_posts = YouTubePosts(http, settings.max_photos)
         self.locks = KeyedLocks()
         self.leases: dict[Path, int] = {}
         self.work = settings.data_dir / "work"
@@ -94,8 +99,11 @@ class MediaPipeline:
 
     async def fetch(self, url: str, *, force: bool = False, render: RenderOptions = RenderOptions()) -> MediaBundle:
         link = normalize_url(url)
+        if link.is_live:
+            raise MediaError(T.DOWNLOAD_LIVE_UNSUPPORTED, code="live_unsupported")
         instagram_video = link.platform == "Instagram" and video_post_id(link.url) is not None
         cache_key = render.cache_key(link.cache_key)
+        prefer_tiktok_page = link.is_short_tiktok or bool(link.comment_id)
         tools, photos, gallery = self.tools, self.photos, self.gallery
         if render != RenderOptions():
             settings = replace(
@@ -109,6 +117,15 @@ class MediaPipeline:
             if cached and not cached.motion_pending and not force:
                 logger.info("media_cache hit=disk platform=%s", link.platform)
                 return cached
+            # Keep the incoming request's key through redirects. Active jobs and
+            # ready deliveries protect this exact cache entry from maintenance.
+            if link.is_short_tiktok:
+                link = await self.comments.resolve(link)
+            if link.is_live:
+                raise MediaError(T.DOWNLOAD_LIVE_UNSUPPORTED, code="live_unsupported")
+            comment_link = link if link.comment_id else None
+            if comment_link:
+                link = link.without_comment
             logger.info("media_fetch platform=%s force=%s", link.platform, force)
             if (
                 shutil.disk_usage(self.settings.data_dir).free
@@ -121,11 +138,15 @@ class MediaPipeline:
                 ):
                     raise MediaError(T.SERVICES_PIPELINE_INSUFFICIENT_DISK, code="disk_full", retryable=True)
             directory = Path(tempfile.mkdtemp(prefix="job-", dir=self.work))
+            comment_task = asyncio.create_task(self.comments.text(comment_link)) if comment_link else None
             try:
                 async with asyncio.timeout(self.settings.download_timeout + self.settings.process_timeout * 2):
                     bundle = None
                     photo_error = None
                     instagram_gallery = False
+                    if link.youtube_post_id:
+                        entries = await self.youtube_posts.entries(link)
+                        bundle = await gallery.render_entries(link, directory, entries)
                     if instagram_video:
                         try:
                             entries = await self.instagram.entries(link)
@@ -137,7 +158,7 @@ class MediaPipeline:
                             preserve_limits(error)
                             instagram_gallery = instagram_gallery or isinstance(error, InstagramGalleryError)
                             logger.info("instagram_embed_failed code=%s", error.code)
-                    if link.platform == "TikTok" and "/video/" not in link.url:
+                    if link.platform == "TikTok" and (prefer_tiktok_page or "/video/" not in link.url):
                         try:
                             bundle = await photos.download(link, directory)
                         except MediaError as error:
@@ -213,6 +234,8 @@ class MediaPipeline:
                             bundle = MediaBundle(
                                 directory, link.url, link.platform, title, video, audio=audio, has_audio=has_audio
                             )
+                    if comment_task:
+                        bundle = replace(bundle, source_url=comment_link.url, comment=await comment_task)
                     keep = {asset.filename for asset in bundle.assets}
                     for path in directory.iterdir():
                         if path.is_file() and path.name not in keep:
@@ -232,6 +255,10 @@ class MediaPipeline:
             except OSError as error:
                 raise MediaError(T.SERVICES_PIPELINE_SAVE_FAILED, code="storage_error", retryable=True) from error
             finally:
+                if comment_task:
+                    if not comment_task.done():
+                        comment_task.cancel()
+                    await asyncio.gather(comment_task, return_exceptions=True)
                 if directory.exists():
                     remove_directory(directory, self.work)
 

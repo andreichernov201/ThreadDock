@@ -31,6 +31,7 @@ class Destination:
     requester_id: int
     thread_id: int | None = None
     business_id: str = ""
+    sent_at: int = 0
 
 
 @dataclass(frozen=True)
@@ -79,6 +80,7 @@ class MediaBundle:
     has_audio: bool = True
     media: tuple[Asset, ...] = ()
     motion_pending: bool = False
+    comment: str = ""
 
     @property
     def assets(self) -> tuple[Asset, ...]:

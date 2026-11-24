@@ -43,9 +43,7 @@ def panel(scope: str, subject: int, app: Application):
         choices("photo_seconds", [(value, T.PREF_SECONDS.format(n=value)) for value in (2, 3, 5, 10)]),
         choices("live_limit", [(0, T.PREF_FULL), (5, T.PREF_LIMIT.format(n=5)), (10, T.PREF_LIMIT.format(n=10))]),
     ]
-    if scope == "user":
-        rows.append(choices("senders", [("all", T.PREF_BOTH), ("self", T.PREF_SELF), ("peer", T.PREF_PEER)]))
-    else:
+    if scope == "group":
         rows.append(choices("senders", [("all", T.PREF_ALL), ("admins", T.PREF_ADMINS)]))
         rows.append(choices("senders", [("selected", T.PREF_SELECTED), ("mine", T.PREF_SELF)]))
     return T.PREF_GROUP if scope == "group" else T.PREF_PERSONAL, InlineKeyboardMarkup(inline_keyboard=rows)
@@ -79,7 +77,11 @@ async def change_preference(query: CallbackQuery, app: Application) -> None:
     scope, subject = target
     name, value = parts[1:]
     try:
-        if name == "senders" and value == "mine" and scope == "group":
+        if name == "senders" and scope == "user":
+            # Old keyboards can still be clicked after an update. Replace the
+            # panel without restoring the removed personal sender rule.
+            pass
+        elif name == "senders" and value == "mine" and scope == "group":
             app.database.only_sender(subject, query.from_user.id)
         else:
             value = int(value) if name in {"photo_seconds", "live_limit"} else value
@@ -93,7 +95,7 @@ async def change_preference(query: CallbackQuery, app: Application) -> None:
     except TelegramBadRequest as error:
         if "message is not modified" not in error.message.lower():
             raise
-    await query.answer(T.PREF_SAVED)
+    await query.answer(T.PREF_AUTOMATIC if name == "senders" and scope == "user" else T.PREF_SAVED)
 
 
 @router.message(Command("allow", "deny"))

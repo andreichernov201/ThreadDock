@@ -47,6 +47,24 @@ class ExtractUrlsTests(unittest.TestCase):
 
 
 class NormalizeUrlTests(unittest.TestCase):
+    def test_live_routes_are_distinct_from_recordings_and_live_photos(self):
+        for url in [
+            "https://www.tiktok.com/@user/live",
+            "https://m.tiktok.com/share/live/123/",
+            "https://www.instagram.com/user/live/123/",
+            "https://www.instagram.com/live/123/",
+        ]:
+            with self.subTest(url=url):
+                self.assertTrue(normalize_url(url).is_live)
+        for url in [
+            "https://youtube.com/live/abc",
+            "https://www.instagram.com/tv/abc/",
+            "https://www.tiktok.com/@live/video/123",
+            "https://www.tiktok.com/@user/photo/123",
+        ]:
+            with self.subTest(url=url):
+                self.assertFalse(normalize_url(url).is_live)
+
     def test_youtube_publication_identity_ignores_timestamps_and_url_shape(self):
         variants = [
             "https://youtu.be/abc?t=10",

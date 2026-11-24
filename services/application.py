@@ -1,5 +1,7 @@
 """Composition of use cases. Telegram handlers only validate context and submit jobs."""
 
+import hashlib
+import json
 import logging
 
 from aiogram import Bot
@@ -68,7 +70,12 @@ class Application:
         elif message.chat.type != "private":
             return None
         destination = Destination(
-            message.chat.id, message.message_id, message.from_user.id, message.message_thread_id, identifier
+            message.chat.id,
+            message.message_id,
+            message.from_user.id,
+            message.message_thread_id,
+            identifier,
+            int(message.date.timestamp()),
         )
         return destination if await sender_permitted(self.bot, self.database, destination) else None
 
@@ -101,8 +108,28 @@ class Application:
         if not self.accepting:
             return 0, [T.SERVICES_APPLICATION_RESTARTING]
         mode = "album" if prefs["mode"] == "photos" else "video"
+        event = ""
+        if connection and destination.sent_at:
+            # The two Business accounts have different message IDs. Match the
+            # sender, Telegram timestamp and payload; store only a digest.
+            event = hashlib.sha256(
+                json.dumps(
+                    [destination.requester_id, destination.sent_at, text, [url for _, url, _ in requests]],
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()
         count = (
-            self.database.enqueue(requests, destination, mode, self.settings.queue_capacity, render) if requests else 0
+            self.database.enqueue(
+                requests,
+                destination,
+                mode,
+                self.settings.queue_capacity,
+                render,
+                business_event=event,
+            )
+            if requests
+            else 0
         )
         if requests:
             logger.info(

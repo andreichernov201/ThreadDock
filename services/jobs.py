@@ -34,6 +34,7 @@ class JobQueue:
         self.stopping = asyncio.Event()
         self.tasks: list[asyncio.Task] = []
         self.prepared = {}
+        self.processing: dict[int, asyncio.Task] = {}
         self.delivery_locks = KeyedLocks()
 
     def start(self) -> None:
@@ -68,7 +69,16 @@ class JobQueue:
             if job is None:
                 await self._idle(0.3)
                 continue
-            await self._process(job, prepare_only=True)
+            task = asyncio.create_task(self._process(job, prepare_only=True))
+            self.processing[job.id] = task
+            try:
+                await task
+            except asyncio.CancelledError:
+                row = self.database.get_job(job.id)
+                if self.stopping.is_set() or row is None or row["status"] != "cancelled":
+                    raise
+            finally:
+                self.processing.pop(job.id, None)
 
     async def _delivery_worker(self) -> None:
         while not self.stopping.is_set():
@@ -80,8 +90,12 @@ class JobQueue:
 
     async def _deliver_ready(self, job: Job) -> None:
         self.database.pause_request(job.id)
-        async with self.delivery_locks.hold(f"{job.destination.business_id}:{job.destination.chat_id}"):
+        key = self.database.business_lock(job.id, f"{job.destination.business_id}:{job.destination.chat_id}")
+        async with self.delivery_locks.hold(key):
             row = self.database.get_job(job.id)
+            if row["status"] == "cancelled":
+                self.prepared.pop(job.id, None)
+                return
             if row["error_code"]:
                 await self._notify(
                     job, self._failure_text(row["error_code"], bool(row["retryable"])), retry=bool(row["retryable"])
@@ -98,6 +112,10 @@ class JobQueue:
             await self._process(job, bundle=bundle)
 
     def _failure_text(self, code: str, retryable: bool) -> str:
+        if code == "no_photos":
+            return T.DOWNLOAD_NO_PHOTOS
+        if code == "live_unsupported":
+            return T.DOWNLOAD_LIVE_UNSUPPORTED
         if code == "request_expired":
             return T.DOWNLOAD_TIME_LIMIT.format(seconds=int(self.settings.request_timeout))
         if code == "internal_error":
@@ -126,6 +144,8 @@ class JobQueue:
         started = time.monotonic()
         stage = "permission"
         try:
+            if self.database.get_job(job.id)["status"] == "cancelled":
+                return
             remaining = self.database.request_remaining(job.id, self.settings.request_timeout)
             if remaining <= 0:
                 await self._expire(job, defer=prepare_only)
@@ -138,6 +158,8 @@ class JobQueue:
                 if bundle is None:
                     stage = "download"
                     bundle = await self._fetch(job)
+                if self.database.get_job(job.id)["status"] == "cancelled":
+                    return
                 if prepare_only:
                     self.prepared[job.id] = bundle
                     self.database.status(job.id, "ready")
@@ -147,6 +169,14 @@ class JobQueue:
                     with self.pipeline.using(bundle):
                         await self.delivery.deliver(job, bundle)
                 except MissingAsset:
+                    row = self.database.get_job(job.id)
+                    if row["business_request_id"] and not row["progress"]:
+                        # Rebuild through a preparation worker. Holding the
+                        # conversation lock during a refetch would prevent an
+                        # already-ready second connection from winning.
+                        self.database.delete_cache(job.cache_key)
+                        self.database.status(job.id, "queued", "cache_miss")
+                        return
                     bundle = await self._fetch(job, force=True)
                     row = self.database.get_job(job.id)
                     with self.pipeline.using(bundle):
@@ -200,6 +230,9 @@ class JobQueue:
             if not isinstance(error, TelegramForbiddenError):
                 await self._notify(job, T.SERVICES_JOBS_FILE_REJECTED)
         except MediaError as error:
+            if error.code == "business_standby":
+                self.database.status(job.id, "ready")
+                return
             if error.code == "permission_revoked":
                 self.database.status(job.id, "cancelled", error.code)
                 return
@@ -214,22 +247,7 @@ class JobQueue:
                 self.database.status(job.id, "failed", error.code)
                 if error.retryable:
                     self.database.offer_retry(job.id)
-                unavailable = {
-                    "unavailable",
-                    "authentication",
-                    "source_blocked",
-                    "source_http",
-                    "photo_metadata_missing",
-                }
-                message = (
-                    T.DOWNLOAD_TOO_LARGE
-                    if error.code == "file_too_large"
-                    else T.DOWNLOAD_TRY_LATER
-                    if error.retryable
-                    else T.DOWNLOAD_UNAVAILABLE
-                    if error.code in unavailable
-                    else T.DOWNLOAD_FAILED
-                )
+                message = self._failure_text(error.code, error.retryable)
                 if prepare_only:
                     self.database.status(job.id, "ready", error.code)
                 else:
@@ -250,6 +268,16 @@ class JobQueue:
                 self.database.status(job.id, "ready", "internal_error")
             else:
                 await self._notify(job, T.SERVICES_JOBS_INTERNAL_ERROR)
+        finally:
+            for prepared_id in list(self.prepared):
+                row = self.database.get_job(prepared_id)
+                if row is None or row["status"] == "cancelled":
+                    self.prepared.pop(prepared_id, None)
+            for processing_id, task in list(self.processing.items()):
+                if task is not asyncio.current_task() and not task.done() and not task.cancelling():
+                    row = self.database.get_job(processing_id)
+                    if row and row["status"] == "cancelled":
+                        task.cancel()
 
     async def _fetch(self, job: Job, *, force=False):
         options = {"force": True} if force else {}
@@ -280,6 +308,8 @@ class JobQueue:
         logger.info("download_deadline progress=%s", row["progress"])
 
     async def _notify(self, job: Job, message: str, *, retry: bool = False) -> None:
+        if not self.delivery.permitted(job.destination) or not self.database.business_notify(job.id):
+            return
         markup = None
         if retry:
             markup = InlineKeyboardMarkup(
