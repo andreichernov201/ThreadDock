@@ -8,6 +8,7 @@ import os
 import shutil
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from threading import Event
 
@@ -133,6 +134,10 @@ class ArchiveService:
                 continue
             if self.repository.author_excluded(item.from_user.id if item.from_user else None):
                 continue
+            sent_at = item.date.timestamp()
+            edited_at = item.edit_date
+            if isinstance(edited_at, datetime):
+                edited_at = edited_at.timestamp()
             self.repository.ingest(
                 owner_id=owner_id,
                 connection_id=message.business_connection_id,
@@ -140,8 +145,8 @@ class ArchiveService:
                 title=title[:250],
                 username=message.chat.username or "",
                 telegram_id=item.message_id,
-                sent_at=item.date.timestamp(),
-                changed_at=(item.edit_date or item.date).timestamp(),
+                sent_at=sent_at,
+                changed_at=edited_at if edited_at is not None else sent_at,
                 outgoing=bool(item.from_user and item.from_user.id == owner_id),
                 sender_id=item.from_user.id if item.from_user else None,
                 media_group=item.media_group_id,
@@ -451,33 +456,20 @@ class ArchiveService:
         }.get(rows[0]["kind"], "")
         if len(rows) > 1:
             reason = T.ARCHIVE_REASON_DELETED_BATCH.format(count=len(rows))
-        previous = None
         if rows[0]["kind"] == "edited":
-            row = rows[0]
-            previous = self.repository.previous_version(owner["owner_id"], row["message_id"], row["version_id"])
-            reason = T.ARCHIVE_REASON_EDITED if previous else T.ARCHIVE_REASON_EDIT_WITHOUT_ORIGINAL
-        if reason:
-            text += "\n" + html.escape(reason)
-        if not owner["hide_content"] and rows[0]["kind"] == "edited":
-            start = 0
-            if previous and previous["body"] != row["body"]:
-                common = os.path.commonprefix((previous["body"].strip(), row["body"].strip()))
-                start = max(0, len(common) - 80)
-            before = self._edit_preview(previous, start) if previous else T.ARCHIVE_SERVICE_PREVIOUS_MISSING
-            text += T.ARCHIVE_SERVICE_EDIT_COMPARISON.format(
-                before=html.escape(before),
-                after=html.escape(self._edit_preview(row, start)),
-            )
+            text += self._edit_notice(rows[0], owner)
+        else:
             if (
-                previous
-                and row["version_payload"]
-                and (
-                    visible_content(json.loads(previous["payload"]))[1]
-                    != visible_content(json.loads(row["version_payload"]))[1]
-                )
+                rows[0]["kind"] == "reply_media"
+                and not self.repository.db.execute(
+                    "SELECT 1 FROM archive_media WHERE owner_id=? AND message_id=? AND ephemeral=1",
+                    (owner["owner_id"], rows[0]["message_id"]),
+                ).fetchone()
             ):
-                text += "\n" + T.ARCHIVE_SERVICE_ATTACHMENT_CHANGED
-        elif not owner["hide_content"]:
+                reason = T.ARCHIVE_REASON_EPHEMERAL_FILE_MISSING
+            if reason:
+                text += "\n" + html.escape(reason)
+        if not owner["hide_content"] and rows[0]["kind"] != "edited":
             previews = [
                 html.escape((row["body"] or "").strip()[:500] or T.ARCHIVE_SERVICE_EMPTY_PREVIEW) for row in rows[:4]
             ]
@@ -523,16 +515,61 @@ class ArchiveService:
         for job_id in batch_ids[1:]:
             self.repository.task_status(job_id, "done")
 
-    @staticmethod
-    def _edit_preview(version, start: int) -> str:
-        payload = json.loads(
-            (version["version_payload"] if "version_payload" in version.keys() else version["payload"]) or "{}"
+    def _edit_notice(self, row, owner: dict) -> str:
+        previous = self.repository.previous_version(owner["owner_id"], row["message_id"], row["version_id"])
+        current_payload = json.loads(row["version_payload"] or "{}")
+        previous_payload = json.loads(previous["payload"]) if previous else {}
+        before = previous["body"] if previous else ""
+        after = row["body"] or ""
+        reason = T.ARCHIVE_REASON_EDIT_WITHOUT_ORIGINAL
+        if previous:
+            reason = T.ARCHIVE_REASON_EDITED
+            if row["version_payload"]:
+                text_changed = before != after
+                files_changed = visible_content(previous_payload)[1] != visible_content(current_payload)[1]
+                if text_changed and files_changed:
+                    reason = T.ARCHIVE_REASON_EDIT_TEXT_AND_FILES
+                elif text_changed:
+                    reason = T.ARCHIVE_REASON_EDIT_TEXT
+                elif files_changed:
+                    reason = T.ARCHIVE_REASON_EDIT_FILES
+
+        text = "\n" + html.escape(reason)
+        if owner["hide_content"]:
+            return text
+        prefix = tail = 0
+        if previous and before != after:
+            prefix = len(os.path.commonprefix((before, after)))
+            tail = len(os.path.commonprefix((before[prefix:][::-1], after[prefix:][::-1])))
+        start = max(0, prefix - 80)
+        before_span = (prefix, len(before) - tail) if previous and before != after else (0, 0)
+        after_span = (prefix, len(after) - tail) if previous and before != after else (0, 0)
+        return text + T.ARCHIVE_SERVICE_EDIT_COMPARISON.format(
+            before=self._edit_preview(before, previous_payload, start, before_span)
+            if previous
+            else html.escape(T.ARCHIVE_SERVICE_PREVIOUS_MISSING),
+            after=self._edit_preview(after, current_payload, start, after_span),
         )
-        body = (version["body"] or "").strip()
+
+    @staticmethod
+    def _edit_preview(body: str, payload: dict, start: int, changed: tuple[int, int]) -> str:
+        end = min(len(body), start + 320)
+        left, right = max(start, changed[0]), min(end, changed[1])
+        excerpt = html.escape(body[start:end])
+        if left < right:
+            excerpt = (
+                html.escape(body[start:left])
+                + "<b>"
+                + html.escape(body[left:right])
+                + "</b>"
+                + html.escape(body[right:end])
+            )
+        if start:
+            excerpt = "…" + excerpt
+        if end < len(body):
+            excerpt += "…"
         names = ", ".join(item["filename"] for item in payload.get("media", []))
-        excerpt = ("…" if start else "") + body[start : start + 320] + ("…" if len(body) > start + 320 else "")
-        preview = "\n".join(filter(None, (excerpt, names[:120])))
-        return preview or T.ARCHIVE_SERVICE_EMPTY_PREVIEW
+        return "\n".join(filter(None, (excerpt, html.escape(names[:120])))) or T.ARCHIVE_SERVICE_EMPTY_PREVIEW
 
     async def _save_media(self, task: dict, owner: dict):
         prefetch = task["kind"] == "prefetch"

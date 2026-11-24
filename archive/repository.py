@@ -423,7 +423,7 @@ class ArchiveRepository:
                     (sent_at, int(outgoing), sender_id, media_group, message_id),
                 )
             special = "reply_media" if payload.get("ephemeral") else "protected_media" if payload["protected"] else None
-            if payload["media"] and special:
+            if special == "reply_media" or (special and payload["media"]):
                 self._event(
                     owner_id,
                     chat["id"],
@@ -432,7 +432,7 @@ class ArchiveRepository:
                     now,
                     f"{special}:{message_id}",
                     version=version_id,
-                    payload={"from_reply": captured_from_reply},
+                    payload={"from_reply": captured_from_reply, "ephemeral": special == "reply_media"},
                 )
             for item in payload["media"]:
                 identifier = uuid.uuid4().hex
@@ -465,7 +465,8 @@ class ArchiveRepository:
                     ).fetchone()
                     if staged:
                         self._enqueue(owner_id, "prefetch", {"media_id": staged[0]}, f"prefetch:{staged[0]}")
-            self._activate_media(owner_id, message_id, owner["media_types"], urgent=special == "reply_media")
+            urgent = special == "reply_media" or (captured_from_reply and special == "protected_media")
+            self._activate_media(owner_id, message_id, owner["media_types"], urgent=urgent)
         return message_id
 
     def _save_version(
@@ -633,6 +634,16 @@ class ArchiveRepository:
                 )
                 self._enqueue(owner_id, "media", {"media_id": row["id"], "urgent": urgent}, f"media:{row['id']}")
 
+        if urgent:
+            self.db.execute(
+                """UPDATE archive_tasks SET payload=json_set(payload,'$.urgent',1) WHERE owner_id=?
+                AND kind='media' AND status='pending' AND coalesce(json_extract(payload,'$.urgent'),0)=0
+                AND dedupe IN (
+                    SELECT 'media:' || id FROM archive_media WHERE owner_id=? AND message_id=? AND status='pending'
+                )""",
+                (owner_id, owner_id, message_id),
+            )
+
     def stage_untriggered_media(self) -> list[str]:
         """Retire old downloads, preserving Telegram references for later deletions."""
         with self.db:
@@ -640,6 +651,7 @@ class ArchiveRepository:
                 """UPDATE archive_events SET kind='protected_media' WHERE kind='reply_media' AND EXISTS (
                 SELECT 1 FROM archive_versions v WHERE v.id=archive_events.version_id
                 AND json_extract(v.payload,'$.protected')=1 AND coalesce(json_extract(v.payload,'$.ephemeral'),0)=0)
+                AND coalesce(json_extract(archive_events.payload,'$.ephemeral'),0)=0
                 AND NOT EXISTS(SELECT 1 FROM archive_media a WHERE a.message_id=archive_events.message_id AND a.ephemeral=1)"""
             )
             # Earlier versions treated every replied attachment as disappearing.
@@ -647,6 +659,7 @@ class ArchiveRepository:
                 """DELETE FROM archive_events WHERE kind='reply_media' AND NOT EXISTS (
                 SELECT 1 FROM archive_versions v WHERE v.id=archive_events.version_id
                 AND (json_extract(v.payload,'$.protected')=1 OR json_extract(v.payload,'$.ephemeral')=1))
+                AND coalesce(json_extract(archive_events.payload,'$.ephemeral'),0)=0
                 AND NOT EXISTS(SELECT 1 FROM archive_media a WHERE a.message_id=archive_events.message_id AND a.ephemeral=1)"""
             )
             rows = self.db.execute(
