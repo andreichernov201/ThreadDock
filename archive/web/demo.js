@@ -12,7 +12,6 @@ export function createDemoApi() {
     notify_edits: 1,
     notify_deletes: 1,
     notify_keywords: 1,
-    notify_profiles: 0,
     hide_content: 1,
     quiet_start: -1,
     quiet_end: -1,

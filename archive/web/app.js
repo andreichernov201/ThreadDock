@@ -867,7 +867,6 @@ function renderSettings() {
       toggle("notify_deletes", COPY.DELETIONS),
       toggle("notify_edits", COPY.EDITS),
       toggle("notify_keywords", COPY.KEYWORDS),
-      toggle("notify_profiles", COPY.PROFILE_CHANGES),
       toggle("hide_content", COPY.HIDE_MESSAGE_TEXT_IN_NOTIFICATIONS),
       o.quiet_start >= 0
         ? `${String(Math.floor(o.quiet_start / 60)).padStart(2, "0")}:${
@@ -1621,7 +1620,6 @@ document.addEventListener("submit", async (event) => {
           "notify_deletes",
           "notify_edits",
           "notify_keywords",
-          "notify_profiles",
           "hide_content",
         ].map((key) => [key, data.has(key)]),
       );

@@ -272,7 +272,7 @@ class ArchiveRepository:
         )
         if cursor.rowcount:
             identifier = cursor.lastrowid
-            if kind != "new":
+            if kind not in {"new", "profile"}:
                 self._enqueue(owner, "notify", {"event_ids": [identifier]}, f"notify:{identifier}")
             return identifier
         return None
@@ -422,7 +422,17 @@ class ArchiveRepository:
                     "UPDATE archive_messages SET sent_at=?,outgoing=?,sender_id=coalesce(?,sender_id),media_group_id=? WHERE id=?",
                     (sent_at, int(outgoing), sender_id, media_group, message_id),
                 )
-            special = "reply_media" if payload.get("ephemeral") else "protected_media" if payload["protected"] else None
+            # Later snapshots (including replies) can omit the disappearing marker.
+            ephemeral = bool(payload.get("ephemeral")) or (
+                old is not None
+                and self.db.execute(
+                    """SELECT 1 FROM archive_events WHERE owner_id=? AND message_id=? AND kind='reply_media'
+                    AND json_extract(payload,'$.ephemeral')=1""",
+                    (owner_id, message_id),
+                ).fetchone()
+                is not None
+            )
+            special = "reply_media" if ephemeral else "protected_media" if payload["protected"] else None
             if special == "reply_media" or (special and payload["media"]):
                 self._event(
                     owner_id,
@@ -436,11 +446,15 @@ class ArchiveRepository:
                 )
             for item in payload["media"]:
                 identifier = uuid.uuid4().hex
-                self.db.execute(
+                saved = self.db.execute(
                     """INSERT INTO archive_media(id,owner_id,message_id,file_id,unique_id,kind,filename,mime_type,size,protected,ephemeral,created_at,status)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'staged') ON CONFLICT(message_id,unique_id,kind) DO UPDATE SET
                     file_id=excluded.file_id,protected=max(archive_media.protected,excluded.protected),
-                    ephemeral=max(archive_media.ephemeral,excluded.ephemeral)""",
+                    ephemeral=max(archive_media.ephemeral,excluded.ephemeral),
+                    status=CASE WHEN excluded.ephemeral=1 AND archive_media.local_path IS NULL
+                        AND archive_media.status IN ('remote','protected') AND excluded.file_id!=archive_media.file_id
+                        THEN 'staged' ELSE archive_media.status END
+                    RETURNING id,status""",
                     (
                         identifier,
                         owner_id,
@@ -452,10 +466,17 @@ class ArchiveRepository:
                         item["mime_type"],
                         item["size"],
                         int(payload["protected"]),
-                        int(bool(payload.get("ephemeral"))),
+                        int(ephemeral),
                         now,
                     ),
-                )
+                ).fetchone()
+                if ephemeral and saved["id"] != identifier and saved["status"] == "staged":
+                    # Retire a completed download's key so a fresh file reference can be tried.
+                    self.db.execute(
+                        """UPDATE archive_tasks SET dedupe=NULL WHERE owner_id=? AND dedupe=?
+                        AND status IN ('done','failed')""",
+                        (owner_id, f"media:{saved['id']}"),
+                    )
                 if not captured_from_reply and not special and item["kind"] in owner["media_types"]:
                     staged = self.db.execute(
                         """SELECT a.id FROM archive_media a WHERE a.message_id=? AND a.unique_id=? AND a.kind=?
