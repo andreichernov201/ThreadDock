@@ -112,6 +112,8 @@ class JobQueue:
             await self._process(job, bundle=bundle)
 
     def _failure_text(self, code: str, retryable: bool) -> str:
+        if code == "no_photos":
+            return T.DOWNLOAD_NO_PHOTOS
         if code == "live_unsupported":
             return T.DOWNLOAD_LIVE_UNSUPPORTED
         if code == "request_expired":
@@ -245,22 +247,7 @@ class JobQueue:
                 self.database.status(job.id, "failed", error.code)
                 if error.retryable:
                     self.database.offer_retry(job.id)
-                unavailable = {
-                    "unavailable",
-                    "authentication",
-                    "source_blocked",
-                    "source_http",
-                    "photo_metadata_missing",
-                }
-                message = (
-                    T.DOWNLOAD_TOO_LARGE
-                    if error.code == "file_too_large"
-                    else T.DOWNLOAD_TRY_LATER
-                    if error.retryable
-                    else T.DOWNLOAD_UNAVAILABLE
-                    if error.code in unavailable
-                    else T.DOWNLOAD_FAILED
-                )
+                message = self._failure_text(error.code, error.retryable)
                 if prepare_only:
                     self.database.status(job.id, "ready", error.code)
                 else:
